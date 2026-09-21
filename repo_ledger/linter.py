@@ -1,222 +1,115 @@
-"""Static linter for registry consistency and inverse reference scanning."""
-from __future__ import annotations
-
+"""Read-only working tree validation with an auditable scan inventory."""
 import fnmatch
-import json
-import re
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+import re
+from .errors import Issue, LedgerError
+from .git import inventory, safe_file
 
-from .config import LedgerConfig
-from .registry import EntityRegistry
-
-HASH40_RE = re.compile(r"^[0-9a-f]{40}$")
-COMMIT_PATH_RE = re.compile(r"^commit:([0-9a-f]{7,40})(:.+)?$")
-
-
-@dataclass
-class LintIssue:
-    code: str
-    location: str
-    entity: str
-    reason: str
-    suggestion: str
-    severity: str = "ERROR"
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "code": self.code,
-            "severity": self.severity,
-            "location": self.location,
-            "entity": self.entity,
-            "reason": self.reason,
-            "suggestion": self.suggestion,
-        }
-
-    def __str__(self) -> str:
-        return f"[{self.code}] {self.location}: {self.reason} (Suggestion: {self.suggestion})"
-
-
-def is_ignored(rel_path: str, ignore_globs: list[str]) -> bool:
-    for pat in ignore_globs:
-        if fnmatch.fnmatch(rel_path, pat) or fnmatch.fnmatch(Path(rel_path).name, pat):
-            return True
-        parts = rel_path.split("/")
-        for i in range(1, len(parts)):
-            sub = "/".join(parts[:i])
-            if fnmatch.fnmatch(sub, pat) or fnmatch.fnmatch(sub + "/**", pat):
-                return True
-    return False
-
-
-def check_registry_invariants(registry: EntityRegistry, root: Path) -> list[LintIssue]:
-    issues: list[LintIssue] = []
-    cfg = registry.config
-
-    type_regex = re.compile(r"^([A-Z_]+)-([1-9][0-9]*)$")
-    ids_seen: dict[str, int] = {}
-    serials_per_type: dict[str, list[int]] = {}
-
-    all_registered_ids = {r.id for r in registry.rows}
-
-    for row_num, row in enumerate(registry.rows, start=1):
-        rid = row.id.strip()
-        m = type_regex.match(rid)
-        if not m:
-            issues.append(LintIssue(
-                code="ERR_INVALID_ID_FORMAT",
-                location=f"registry row {row_num}",
-                entity=rid,
-                reason=f"ID does not match canonical TYPE-N format (uppercase, no leading zero)",
-                suggestion="Rename to TYPE-N, e.g. TASK-1",
-            ))
-            continue
-
-        type_name, serial = m.group(1), int(m.group(2))
-        ids_seen[rid] = ids_seen.get(rid, 0) + 1
-        serials_per_type.setdefault(type_name, []).append(serial)
-
-        # Status validation
-        t_cfg = cfg.types.get(type_name)
-        if t_cfg and t_cfg.allowed_statuses:
-            if row.status not in t_cfg.allowed_statuses:
-                issues.append(LintIssue(
-                    code="ERR_INVALID_STATUS",
-                    location=f"registry:{rid}",
-                    entity=rid,
-                    reason=f"Status {row.status!r} not in declared allowed vocabulary: {t_cfg.allowed_statuses}",
-                    suggestion=f"Update status to one of {t_cfg.allowed_statuses}",
-                ))
-
-        # Parent existence
-        if row.parent and row.parent not in all_registered_ids:
-            issues.append(LintIssue(
-                code="ERR_PARENT_NOT_FOUND",
-                location=f"registry:{rid}",
-                entity=rid,
-                reason=f"Parent entity {row.parent!r} is not registered in the ledger",
-                suggestion=f"Register parent {row.parent} first or correct parent field",
-            ))
-
-        # Supersedes existence (supports semicolon-separated list of superseded IDs)
-        if row.supersedes:
-            for s_id in (s.strip() for s in re.split(r"[,;]", row.supersedes) if s.strip()):
-                if s_id not in all_registered_ids:
-                    issues.append(LintIssue(
-                        code="ERR_SUPERSEDES_NOT_FOUND",
-                        location=f"registry:{rid}",
-                        entity=rid,
-                        reason=f"Superseded entity {s_id!r} is not registered in the ledger",
-                        suggestion=f"Register {s_id} or correct supersedes field",
-                    ))
-
-        # Anchor validation (Grounding)
-        if t_cfg and t_cfg.require_anchor:
-            anchor = row.anchor.strip()
-            if not anchor:
-                issues.append(LintIssue(
-                    code="ERR_MISSING_ANCHOR",
-                    location=f"registry:{rid}",
-                    entity=rid,
-                    reason="Entity requires a physical anchor, but anchor field is empty",
-                    suggestion="Set anchor to a tracked file path or commit hash",
-                ))
+def check_registry_invariants(registry, root):
+    tracked, _, _ = inventory(root)
+    issues = []
+    rows = {r.id: r for r in registry.rows}
+    def emit(code, row, reason):
+        issues.append(Issue(code, f"{registry.path}:{registry.lines.get(row.id, 1)}:1",
+                            row.id, reason, "Inspect the entity and its evidence; correct the cause explicitly."))
+    for row in registry.rows:
+        cfg = registry.config.types[row.id.rsplit("-", 1)[0]]
+        anchor = row.anchor
+        if not anchor and cfg.require_anchor:
+            emit("ERR_MISSING_ANCHOR", row, "A tracked evidence file is required")
+        elif anchor:
+            if ":" in anchor or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", anchor):
+                emit("ERR_UNSUPPORTED_ANCHOR", row, "Historical anchors are not supported; no object validity is inferred")
             else:
-                # Validate anchor target format and existence
-                is_commit = bool(HASH40_RE.match(anchor) or COMMIT_PATH_RE.match(anchor))
-                if not is_commit:
-                    anchor_path = root / anchor
-                    if not anchor_path.exists():
-                        issues.append(LintIssue(
-                            code="ERR_ANCHOR_NOT_FOUND",
-                            location=f"registry:{rid}",
-                            entity=rid,
-                            reason=f"Physical anchor {anchor!r} does not exist on filesystem",
-                            suggestion=f"Ensure {anchor} exists or update to an existing artifact",
-                        ))
-
-    # Duplicate ID check
-    for rid, count in ids_seen.items():
-        if count > 1:
-            issues.append(LintIssue(
-                code="ERR_DUPLICATE_ID",
-                location=f"registry",
-                entity=rid,
-                reason=f"Entity ID {rid} is duplicated {count} times (must be strictly unique)",
-                suggestion="Keep only one authoritative entry for this ID",
-            ))
-
-    # Optional Serial Gap Check (Only if allow_gaps is False)
-    if not cfg.allow_gaps:
-        for type_name, serials in serials_per_type.items():
-            s_set = set(serials)
-            max_s = max(s_set)
-            expected = set(range(1, max_s + 1))
-            missing = sorted(expected - s_set)
-            if missing:
-                issues.append(LintIssue(
-                    code="ERR_SERIAL_GAP",
-                    location=f"registry:{type_name}",
-                    entity=type_name,
-                    reason=f"Type {type_name} has gap(s) {missing} in serial sequence 1..{max_s}",
-                    suggestion="Fill missing serials or enable allow_gaps in ledger.toml",
-                ))
-
+                try:
+                    path = safe_file(root, anchor)
+                    if anchor not in tracked or not path.is_file():
+                        emit("ERR_ANCHOR_NOT_FOUND", row, f"Anchor must be an existing tracked regular file: {anchor}")
+                except LedgerError as exc:
+                    emit(exc.issue.code, row, exc.issue.reason)
+    for relation in ("parent", "supersedes"):
+        graph = {}
+        for row in registry.rows:
+            targets = ([row.parent] if row.parent else []) if relation == "parent" else (
+                [t.strip() for t in row.supersedes.split(",")] if row.supersedes else [])
+            graph[row.id] = targets
+            for target in targets:
+                if target == row.id:
+                    emit("ERR_SELF_REFERENCE", row, f"{relation} references itself")
+                elif target not in rows:
+                    emit("ERR_RELATION_NOT_FOUND", row, f"{relation} target does not exist: {target}")
+        # Iterative DFS avoids recursion depth failures on long task histories.
+        colors = {}
+        for start in graph:
+            if colors.get(start):
+                continue
+            stack = [(start, False)]
+            while stack:
+                node, leaving = stack.pop()
+                if leaving:
+                    colors[node] = 2
+                    continue
+                if colors.get(node) == 2:
+                    continue
+                colors[node] = 1
+                stack.append((node, True))
+                for target in graph[node]:
+                    if target not in graph or target == node:
+                        continue
+                    if colors.get(target) == 1:
+                        emit("ERR_RELATION_CYCLE", rows[node], f"Cycle in {relation} through {target}")
+                    elif not colors.get(target):
+                        stack.append((target, False))
     return issues
 
-
-def scan_codebase_references(
-    root: Path,
-    registry: EntityRegistry,
-    config: LedgerConfig,
-) -> list[LintIssue]:
-    issues: list[LintIssue] = []
-    registered_ids = {r.id for r in registry.rows}
-    all_prefixes = [cfg.prefix for cfg in config.types.values()]
-    if not all_prefixes:
-        return issues
-
-    ref_regex = re.compile(rf"\b({'|'.join(re.escape(p) for p in all_prefixes)})-([1-9][0-9]*)\b")
-    code_exts = tuple(config.code_extensions)
-
-    files_to_scan: list[Path] = []
-    reg_resolved = (root / config.registry_path).resolve()
-
-    for p in root.rglob("*"):
-        if not p.is_file():
+def scan(root, registry):
+    tracked, new, git_ignored = inventory(root)
+    cfg = registry.config
+    audit = {"view": "worktree", "scope": "full configured text scope",
+             "tracked": sorted(tracked), "untracked": sorted(new),
+             "git_ignored": git_ignored, "ignore_globs": cfg.ignore_globs,
+             "scanned": [], "excluded": []}
+    issues = []
+    prefixes = "|".join(re.escape(t) for t in cfg.types)
+    pattern = re.compile(rf"(?<![\w-])(?:{prefixes})-[0-9]+(?![\w-])")
+    known = {r.id for r in registry.rows}
+    for rel in sorted(tracked | new):
+        reason = None
+        if rel == cfg.registry_path:
+            reason = "authoritative registry parsed separately"
+        elif any(fnmatch.fnmatchcase(rel, p) for p in cfg.ignore_globs):
+            reason = "configured ignore"
+        elif Path(rel).suffix not in set(cfg.code_extensions) | {".md"}:
+            reason = "extension outside scope"
+        if reason:
+            audit["excluded"].append({"file": rel, "reason": reason})
             continue
-        rel = p.relative_to(root).as_posix()
-        if is_ignored(rel, config.ignore_globs):
-            continue
-        if p.resolve() == reg_resolved:
-            continue
-        if rel.endswith(code_exts) or rel.endswith(".md"):
-            files_to_scan.append(p)
-
-    for fpath in sorted(files_to_scan):
-        rel = fpath.relative_to(root).as_posix()
         try:
-            content = fpath.read_text(encoding="utf-8", errors="replace")
-        except Exception:
+            content = safe_file(root, rel).read_text(encoding="utf-8")
+            audit["scanned"].append(rel)
+        except (OSError, UnicodeError, LedgerError) as exc:
+            issues.append(Issue("ERR_SCAN_INCOMPLETE", f"{rel}:1:1", "", str(exc),
+                                "Restore a readable UTF-8 regular file in the repository.", "incomplete"))
             continue
+        for number, line in enumerate(content.splitlines(), 1):
+            for match in pattern.finditer(line):
+                if match[0] not in known:
+                    issues.append(Issue("ERR_UNREGISTERED_ENTITY", f"{rel}:{number}:{match.start()+1}",
+                                        match[0], "Reference has no registered entity",
+                                        "Lookup existing entities; fix a typo or explicitly allocate a genuinely new entity."))
+    return issues, audit
 
-        for lineno, line in enumerate(content.splitlines(), start=1):
-            for m in ref_regex.finditer(line):
-                candidate_id = f"{m.group(1)}-{m.group(2)}"
-                if candidate_id not in registered_ids:
-                    issues.append(LintIssue(
-                        code="ERR_UNREGISTERED_ENTITY",
-                        location=f"{rel}:{lineno}",
-                        entity=candidate_id,
-                        reason=f"References unregistered entity {candidate_id!r}",
-                        suggestion=f"Allocate {candidate_id} via `repo-ledger allocate {m.group(1)} ...` or fix typo",
-                    ))
+def lint_all(root, registry):
+    return check_registry_invariants(registry, root) + scan(root, registry)[0]
 
-    return issues
-
-
-def lint_all(root: Path, registry: EntityRegistry) -> list[LintIssue]:
-    issues = check_registry_invariants(registry, root)
-    issues.extend(scan_codebase_references(root, registry, registry.config))
-    return issues
+def aggregate(issues):
+    groups = {}
+    for issue in issues:
+        key = (issue.code, issue.entity, issue.reason, issue.category)
+        if key not in groups:
+            groups[key] = {**issue.to_dict(), "count": 0, "locations": []}
+        group = groups[key]
+        group["count"] += 1
+        if len(group["locations"]) < 10:
+            group["locations"].append(issue.location)
+    return list(groups.values())

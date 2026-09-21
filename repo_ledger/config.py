@@ -1,116 +1,95 @@
-"""Configuration loader and schema for RepoLedger."""
-from __future__ import annotations
-
-import sys
+"""Strict Python 3.11+ TOML configuration."""
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Optional
+from pathlib import Path, PurePosixPath
+import re
+import tomllib
+from .errors import LedgerError
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    try:
-        import tomli as tomllib  # type: ignore
-    except ImportError:
-        raise ImportError("Python 3.11+ is required, or install 'tomli' for Python 3.10.")
-
+def relative_path(value):
+    return (isinstance(value, str) and bool(value) and "\\" not in value
+            and ":" not in value and not PurePosixPath(value).is_absolute()
+            and all(p not in ("", ".", "..", ".git") for p in value.split("/")))
 
 @dataclass
 class EntityTypeConfig:
     prefix: str
-    allowed_statuses: list[str] = field(default_factory=list)
+    allowed_statuses: list[str]
     require_anchor: bool = True
     description: str = ""
-
 
 @dataclass
 class LedgerConfig:
     schema_version: str = "1.0"
     registry_path: str = ".ledger/ENTITY_REGISTRY.md"
-    allow_gaps: bool = True  # Per V1 constraint: gaps are not errors by default
-    doc_dirs: list[str] = field(default_factory=lambda: ["docs", ".ai/state", ".ai/handoff"])
-    code_extensions: list[str] = field(default_factory=lambda: [".py", ".ts", ".js", ".go", ".rs", ".json"])
-    ignore_globs: list[str] = field(default_factory=lambda: [
-        "node_modules/**", "dist/**", "build/**", ".git/**", "tests/fixtures/**", "*.egg-info/**"
-    ])
-    types: dict[str, EntityTypeConfig] = field(default_factory=dict)
+    allow_gaps: bool = True
+    code_extensions: list[str] = field(default_factory=lambda: [".py", ".ts", ".js", ".go", ".rs", ".json", ".md"])
+    ignore_globs: list[str] = field(default_factory=list)
+    types: dict = field(default_factory=dict)
 
     @classmethod
-    def default(cls) -> "LedgerConfig":
-        cfg = cls()
-        # Minimal default types per RFC
-        cfg.types = {
-            "TASK": EntityTypeConfig(
-                prefix="TASK",
-                allowed_statuses=["BACKLOG", "READY", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"],
-                require_anchor=True,
-                description="Actionable engineering or research tasks",
-            ),
-            "DECISION": EntityTypeConfig(
-                prefix="DECISION",
-                allowed_statuses=["DRAFT", "IN_FORCE", "SUPERSEDED"],
-                require_anchor=True,
-                description="Architecture Decision Records and policy rulings",
-            ),
-            "ISSUE": EntityTypeConfig(
-                prefix="ISSUE",
-                allowed_statuses=["OPEN", "INVESTIGATING", "RESOLVED", "WONT_FIX"],
-                require_anchor=True,
-                description="Defects, regressions, and blockers",
-            ),
-        }
+    def default(cls):
+        return cls(types={
+            "TASK": EntityTypeConfig("TASK", ["BACKLOG", "READY", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"]),
+            "DECISION": EntityTypeConfig("DECISION", ["DRAFT", "IN_FORCE", "SUPERSEDED"]),
+            "ISSUE": EntityTypeConfig("ISSUE", ["OPEN", "INVESTIGATING", "RESOLVED", "WONT_FIX"]),
+        })
+
+    @classmethod
+    def load(cls, path):
+        def fail(reason):
+            raise LedgerError("ERR_CONFIG", reason, f"{path}:1:1", category="configuration")
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+            fail(str(exc))
+        if set(data) - {"ledger", "types"}:
+            fail("Unknown top-level configuration field")
+        cfg = cls.default()
+        section = data.get("ledger", {})
+        allowed = {"schema_version", "registry_path", "allow_gaps", "code_extensions", "ignore_globs", "doc_dirs"}
+        if not isinstance(section, dict) or set(section) - allowed:
+            fail("Unknown ledger field (transition/evidence policies are not supported yet)")
+        for key, value in section.items():
+            if key == "doc_dirs":
+                if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+                    fail("doc_dirs must be a string array; retained for legacy compatibility")
+                continue
+            setattr(cfg, key, value)
+        if cfg.schema_version != "1.0" or not relative_path(cfg.registry_path):
+            fail("Expected schema 1.0 and a safe repository-relative registry_path")
+        if type(cfg.allow_gaps) is not bool:
+            fail("allow_gaps must be boolean")
+        for key in ("code_extensions", "ignore_globs"):
+            value = getattr(cfg, key)
+            if not isinstance(value, list) or not all(isinstance(x, str) and x for x in value):
+                fail(f"{key} must be a string array")
+        if not all(x.startswith(".") for x in cfg.code_extensions):
+            fail("code_extensions entries must start with a dot")
+        if "types" in data:
+            if not isinstance(data["types"], dict) or not data["types"]:
+                fail("types must be a nonempty table")
+            cfg.types = {}
+            for name, spec in data["types"].items():
+                if not re.fullmatch("[A-Z][A-Z_]*", name) or not isinstance(spec, dict):
+                    fail("Invalid type name or table")
+                if set(spec) - {"prefix", "allowed_statuses", "require_anchor", "description"}:
+                    fail("Unknown type configuration field")
+                statuses = spec.get("allowed_statuses")
+                if (not isinstance(statuses, list) or not statuses
+                    or not all(isinstance(s, str) and re.fullmatch("[A-Z][A-Z_]*", s) for s in statuses)
+                    or len(set(statuses)) != len(statuses)):
+                    fail("allowed_statuses must be distinct uppercase names")
+                if spec.get("prefix", name) != name or type(spec.get("require_anchor", True)) is not bool:
+                    fail("prefix must equal type name; require_anchor must be boolean")
+                cfg.types[name] = EntityTypeConfig(name, statuses, spec.get("require_anchor", True), spec.get("description", ""))
         return cfg
 
-    @classmethod
-    def load(cls, path: Path) -> "LedgerConfig":
-        if not path.is_file():
-            return cls.default()
-
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-
-        ledger_section = data.get("ledger", {})
-        schema_version = str(ledger_section.get("schema_version", "1.0"))
-        registry_path = ledger_section.get("registry_path", ".ledger/ENTITY_REGISTRY.md")
-        allow_gaps = bool(ledger_section.get("allow_gaps", True))
-        doc_dirs = ledger_section.get("doc_dirs", ["docs", ".ai/state", ".ai/handoff"])
-        code_extensions = ledger_section.get("code_extensions", [".py", ".ts", ".js", ".go", ".rs", ".json"])
-        ignore_globs = ledger_section.get("ignore_globs", [
-            "node_modules/**", "dist/**", "build/**", ".git/**", "tests/fixtures/**"
-        ])
-
-        types: dict[str, EntityTypeConfig] = {}
-        types_section = data.get("types", {})
-        if types_section:
-            for type_name, t_data in types_section.items():
-                types[type_name] = EntityTypeConfig(
-                    prefix=t_data.get("prefix", type_name),
-                    allowed_statuses=t_data.get("allowed_statuses", []),
-                    require_anchor=t_data.get("require_anchor", True),
-                    description=t_data.get("description", ""),
-                )
-        else:
-            types = cls.default().types
-
-        return cls(
-            schema_version=schema_version,
-            registry_path=registry_path,
-            allow_gaps=allow_gaps,
-            doc_dirs=doc_dirs,
-            code_extensions=code_extensions,
-            ignore_globs=ignore_globs,
-            types=types,
-        )
-
-
-def find_config_file(start_dir: Optional[Path] = None) -> Optional[Path]:
-    """Find ledger.toml or .ledger.toml in start_dir or parent directories."""
-    curr = (start_dir or Path.cwd()).resolve()
-    for directory in [curr] + list(curr.parents):
-        for candidate in ["ledger.toml", ".ledger.toml", ".ledger/config.toml"]:
-            p = directory / candidate
-            if p.is_file():
-                return p
-        if (directory / ".git").is_dir():
+def find_config_file(start_dir=None):
+    current = (start_dir or Path.cwd()).resolve()
+    for directory in (current, *current.parents):
+        candidate = directory / "ledger.toml"
+        if candidate.is_file():
+            return candidate
+        if (directory / ".git").exists():
             break
     return None

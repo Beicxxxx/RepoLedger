@@ -1,40 +1,18 @@
 ---
 name: repo-ledger
-description: Operate the Git-native RepoLedger entity registry and static linter. Allocate canonical IDs (TASK-N, DECISION-N, ISSUE-N), lookup entity status and physical anchors, and run fail-closed reference checks. Use when the user mentions entity IDs, task allocation, ADRs, or before committing code to ensure zero unregistered entity references.
+description: Query and allocate RepoLedger entities and diagnose reference integrity errors in repositories using ledger.toml.
 ---
 
-# RepoLedger Skill
+# RepoLedger
 
-Authoritative entity governance for AI agents working in this repository.
+Follow the repository's AGENTS.md and the CLI configuration.
 
-## Guiding Principles for Agents
+1. Before referencing an ID, run `repo-ledger lookup <ID> --json`. Before creating an entity, inspect relevant existing references and query plausible matches; lightweight title search is not implemented yet.
+2. Allocate genuinely new entities with `repo-ledger allocate <TYPE> "<title>" --anchor <tracked-file>`. Use the returned ID; never predict a number. Mint only in the designated main workspace.
+3. Read the single entity and its anchor as needed. Do not preload the whole registry.
+4. Update an existing row's status/note only from explicit evidence and run `repo-ledger check --json`. Preserve ID, order and historical records. No update command or transition/evidence enforcement exists yet.
+5. On failure, inspect the reported location. For unknown references, lookup first, determine typo versus new entity, then correct or explicitly allocate. Never fabricate registration or widen ignores to make checks green.
 
-1. **Never invent shorthand or arbitrary codes** (e.g. do not write `Task 1.2`, `M0`, `B1.5`).
-2. **Always query before allocating**: run `repo-ledger lookup <ID>` to inspect status and anchor.
-3. **Always ground allocations**: when allocating a new entity, always specify `--anchor <PATH>` pointing to a real file, proposal doc, or commit hash.
-4. **Fail-Closed Verification**: before every commit or task completion, run `repo-ledger check`. Fix any unregistered references before proceeding.
+Deterministic schema, statuses, relations and anchor rules belong to CLI/configuration, not another rule set in this Skill. Current check validates the working tree only; do not present it as staged or CI merge validation. Historical anchors are currently unsupported.
 
-## Daily Agent Commands
-
-### 1. Lookup Current Entity
-Before starting work on an assigned task:
-```bash
-repo-ledger lookup TASK-1 --json
-```
-Reads the title, status, parent, and authoritative artifact anchor.
-
-### 2. Allocate a New Entity
-When creating a new task, decision, or logging an issue:
-```bash
-repo-ledger allocate TASK "Implement rate limiting" --anchor src/limiter.py --status IN_PROGRESS
-repo-ledger allocate DECISION "Adopt SQLite for local cache" --anchor docs/adr-001.md --status IN_FORCE
-repo-ledger allocate ISSUE "Memory leak in background loop" --anchor tests/test_leak.py --status OPEN
-```
-
-### 3. Verify Codebase Referential Integrity
-```bash
-repo-ledger check
-# Or structured output:
-repo-ledger check --json
-```
-If an unregistered entity (e.g. `TASK-99`) is mentioned in any `.py`, `.ts`, `.rs`, or `.md` file, this command fails and returns the exact `file:line` for immediate self-healing.
+cross-harness-sync is optional and independently installed. RepoLedger does not manage git pull/push, handoff documents, approval roles or session-wide writer policies.

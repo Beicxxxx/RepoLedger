@@ -1,0 +1,8 @@
+{
+  "extra_checks": [
+    {
+      "name": "RepoLedger working tree",
+      "cmd": ["repo-ledger", "check", "--json"]
+    }
+  ]
+}

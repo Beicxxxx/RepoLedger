@@ -1,59 +1,63 @@
-# RepoLedger Architecture & First-Release Scope (RFC)
+# RepoLedger 首轮架构与格式
 
-## 1. Background & Heritage
+## 产品边界
 
-RepoLedger originates from two battle-tested practices developed during complex multi-agent coding sessions:
-1. **cross-harness-sync**: A Git-and-Markdown protocol to transfer progress, blockers, and next prompts across different AI agents, sessions, and machines.
-2. **Entity Numbering System**: Stable identifiers (`TYPE-N`), a single-source-of-truth markdown ledger, and static inverse reference linter to eliminate duplicate creation, dangling references, and code drift.
+运行时为 Python 3.11+ 标准库与 Git CLI；配置用 tomllib。无数据库、MCP Server、后台服务或分布式调度。只交付 RepoLedger CLI 与 RepoLedger Skill；sync 负责跨会话上下文与交接，双方独立可用。
 
-We promise entity referential integrity and traceability; we do not claim to have magically solved all semantic drift.
+现有目录确有原型，本轮在其文件与九列表格式上修订。旧版跳过坏行、仅凭 hash 外形接受锚点、吞掉扫描读取错误、用工作树 hook 冒充提交检查的行为已移除。原型内的 sync 副本不属于交付，不修改外部安装版本。
 
----
+## 数据格式与 Fail-Closed
 
-## 2. Fixed Constraints (已确定约束)
+默认 ledger.toml 位于 Git 仓库根；权威账本为 .ledger/ENTITY_REGISTRY.md。
+第一行必须精确为 `<!-- schema: 1.0 -->`，只支持 1.0。此前言允许空行、`# ` 标题和 `> ` 说明，之后必须是如下九列：
 
-1. **Git-Native & Pure Text**: Zero external databases (no SQLite, no Postgres, no cloud backend). All data resides in diffable, Git-tracked text files.
-2. **Minimal Tech Stack**: Python 3.11+, prioritizing the standard library. Uses built-in `tomllib` to read `ledger.toml`.
-3. **Canonical Identifier Format**: `TYPE-N` (uppercase type name, no leading zeros, monotonically increasing serial per type, append-only, never reused, never reordered).
-4. **Serial Gaps are Not Errors**: Unlike rigid consecutive sequences, serial gaps are allowed by default (`allow_gaps = true`), recognizing that exploratory drafts or dropped proposals naturally leave numbers retired.
-5. **Authoritative Markdown Ledger**: The structured markdown table (e.g. `.ledger/ENTITY_REGISTRY.md`) is the single authoritative data source. It must declare an explicit schema version (e.g. `<!-- schema: 1.0 -->`); parser errors fail loud.
-6. **Minimal Default Entity Types**: `TASK`, `DECISION`, `ISSUE`. Projects can configure custom types in `ledger.toml`.
-7. **Physical Grounding (`anchor`)**: Entities are grounded via an `anchor` (tracked file path, `commit:path`, or commit SHA). Exploratory tasks can anchor to real proposal documents. File existence does not imply task completion.
-8. **Single Allocation Workspace & Short Lock**: Allocations occur in an authoritative workspace protected by a file lock and atomic file replacement during the read -> allocate -> write cycle.
-9. **Strictly Read-Only Linter (`check`)**: The linter never automatically registers unknown entities to silence errors. It outputs stable error codes, location, entity name, reason, actionable suggestions, and supports JSON output.
-10. **Pre-Commit Hook as Local Feedback**: Local hooks provide fast feedback, while CI remains the mandatory enforcement gateway. Hook installation must refuse to overwrite existing hooks without explicit `--force`.
+```text
+| id | name | status | parent | order | anchor | supersedes | date | note |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+```
 
----
+id、name、status、order、date 必填；anchor 默认必填，可按类型 require_anchor 配置。parent、supersedes、note 用空单元格表示空值；不要用 “-” 或 “null”。order 是 ID 的十进制序号，保留原型字段但禁止独立修改。date 为 YYYY-MM-DD。每行恰好九列，不允许尾部正文或第二张表。
 
-## 3. Implementation Choices (首版实现选择)
+字段内 `|` 编码为 `\|`，反斜杠编码为 `\\`；先编码反斜杠再编码竖线。读取逐字符识别这两种转义，不直接 split("|")，不接受其他转义。单元格两侧空白仅作排版；API 拒绝有首尾空白的值。拒绝换行、控制字符和 Unicode 行分隔符。中文和字段内部空格保留。Markdown 代码围栏不能代替转义。
 
-1. **Relation Model**: Single-value `parent` (hierarchical tree) and multi-value `supersedes` (comma/semicolon separated).
-2. **CLI Commands**:
-   - `repo-ledger init`: Scaffolds `ledger.toml` and `.ledger/ENTITY_REGISTRY.md`.
-   - `repo-ledger allocate <TYPE> <NAME> [--anchor <PATH>]`: Atomically allocates the next ID.
-   - `repo-ledger lookup <ID> [--json]`: Queries an entity's metadata without reading the entire ledger.
-   - `repo-ledger check [--json] [--root <DIR>]`: Statically scans code and markdown for unregistered entity references.
-   - `repo-ledger tree`: Visualizes parent/child hierarchy.
-   - `repo-ledger hook install [--force]`: Installs non-destructive git pre-commit hook.
-3. **Scanning Scope**: Scans text files matching configured extensions (`.py`, `.ts`, `.js`, `.go`, `.rs`, `.json`, `.md`), respecting ignore globs.
+缺失/未知/重复 schema、重复 ID、错列、非法字段、坏转义、无法解析的行及冲突标记都失败，不跳行报成功。错误至少包含稳定 code、file:line:column、entity（若可解析）、reason、suggestion。行结构错误定位到行首并说明列数或转义位置；引用错误定位到实际字符列。
 
----
+TYPE-N：类型为大写字母与下划线，首字母大写；N 为无前导零正整数。每类型行序严格递增，默认允许断号。取消/废弃通过状态保留记录，不删记录、不重排、不回收编号。类型与合法状态来自配置，未知配置项拒绝。旧 doc_dirs 兼容接受但不限制扫描目录，避免悄悄漏扫；建议不再配置它。
 
-## 4. Deferred Items (后置事项)
+## 关系与状态
 
-1. **MCP (Model Context Protocol) Server**: Deferred to V2. V1 focuses strictly on deterministic CLI and skills.
-2. **Generic Directed Acyclic Graph (DAG)**: Multi-parent `derived_from` or general graph traversal engines are deferred until real workflows demand them.
-3. **Distributed Allocation / Multi-Clone Locks**: Cross-machine lock arbitration is out of scope for V1.
-4. **State Transition History Audit**: Historical state transition matrix enforcement is deferred to post-V1.
+parent 为可选单 ID；supersedes 为逗号分隔的多个不同 ID。分别验证目标存在、自引用和有向环；暂不定义混合两类边的环为违规。不引入通用图引擎或 derived_from。
 
----
+supersedes 不使旧实体消失，也不使历史引用自动失效。首轮校验存在性，不推断当前适用性。
 
-## 5. Integration Boundaries: RepoLedger vs. Cross-Harness-Sync
+首轮仅校验合法状态集合。迁移矩阵、完成证据策略未实现，任何暗示其启用的配置字段都会被拒绝。下一轮应采用显式 Git 基线比较 old/new；初次登记、删除、状态变化分别定义规则。完成证据应按类型和状态配置，不能把文件存在解释为完成。
 
-* **RepoLedger**: Manages entity identity, status, physical anchors, relationships, and referential integrity.
-* **cross-harness-sync**: Manages narrative context, active focus, session handoff prompt (`NEXT_PROMPT.md`), and single-writer relay.
-* **Touchpoints**:
-  - `cross-harness-sync` references canonical IDs (`TASK-1`, `ISSUE-2`) in `CURRENT.md`.
-  - On session start, agents run `repo-ledger lookup <TASK-ID>` to read the active anchor, avoiding context bloat from reading the full ledger.
-  - `sync_verify.py` invokes `repo-ledger check` in its `extra_checks` pipeline.
-  - The two skills do not hard-depend on each other; either can be used standalone.
+## 锚点
+
+本轮仅支持规范的仓库相对 POSIX 文件路径。拒绝绝对路径、反斜杠、冒号、空组件、.、..、.git 组件及符号链接；解析后的目标须留在仓库内。路径必须在 Git index 受控清单中且在工作树为普通文件。探索任务可锚定需求或理论文件。未提交但已暂存的新文件可作工作树锚点；这不表示 index 检查已实现。
+
+目标完整设计有三种形式：相对文件路径、commit:path、完整 commit 对象 ID。当前所有含冒号的形式以及裸 40/64 位十六进制 token 均返回 ERR_UNSUPPORTED_ANCHOR，不据外观认定 commit 有效。哈希形文件名请置于目录下以消歧。
+
+后续历史实现须按 Git 对象格式识别完整 OID，核实对象确为 commit，commit:path 对应 blob 存在，明确诊断缺失历史/浅克隆且不自动 fetch。历史锚点应允许工作树文件删除。现在删除一个仍被路径锚定的文件会失败，这是已知限制。
+
+## 分配与并发
+
+唯一铸号来源是主工作区的当前账本。linked worktree 或 separate git-dir 分配被拒绝；不是共享锁后读取各自账本。多个克隆之间没有原子分配保证。
+
+短锁 .git/repo-ledger-allocate.lock 用排他创建实现，覆盖重新读取、验证、取号、写入。超时不会偷锁；崩溃遗留锁须确认没有写入进程后人工清理。扫描与查询不会创建锁。
+
+.git/repo-ledger-serials.json 是本地保守编号高水位，不是第二份实体状态表。先原子持久化高水位，再原子替换账本；中断最多保留一个断号。账本回退仍不会重复发号，前提是保留该工作区的 .git 元数据。迁移铸号职责到新克隆、丢失高水位、并行切换分支或手工改账本均不在并发保证内；必须保留全部发行记录并人工协调。未实现跨 Git 历史的删除审计。不得用重复发号消解合并冲突。
+
+## 扫描视图
+
+当前 check 从 Git 获取受控清单和未忽略的新文件，读取工作树内容。默认扫描 .md 及 code_extensions；ignore_globs 使用区分大小写的 fnmatch 仓库相对路径匹配。受控文件不受 .gitignore 排除，显式 ignore_globs 除外；账本始终先解析。非 UTF-8、受控文件缺失、逃逸路径、子模块和未合并 index 均不静默通过。扫描期间并发编辑不提供一致性快照保证。
+
+JSON scope 给出 tracked、untracked、git_ignored、ignore_globs、scanned、excluded；重复错误按 code/entity/reason/category 聚合，count 保留总数，最多十个位置。仅识别配置类型的数字型引用，包含非法前导零；不扫描其他类型及任意自然语言代号。
+
+暂存区、提交树和增量未实现，显式参数返回 ERR_UNSUPPORTED_VIEW。后续 hook 必须读取 index 的配置、账本和文件，测试部分暂存；新增/修改可局部扫，删除/重命名/配置/账本/锚点影响应升级全量。CI 必须检查待合并结果的完整提交树。本地 hook 只是反馈入口，不应覆盖已有 hook；当前无 hook 安装命令。
+
+## 模块与后续顺序
+
+config：配置；registry：严格 codec 与分配；git：Git inventory 和路径约束；linter：关系/锚点/引用；cli：命令与诊断；errors：共享诊断结构。
+
+优先级：1. index 与合并提交树视图及基线审计；2. 历史锚点与 SHA-1/SHA-256/浅克隆测试；3. 类型/状态完成证据与迁移规则；4. 轻量查询搜索与非覆盖 hook。性能测量在语义稳定后进行，须报告环境、文件规模和方法。
