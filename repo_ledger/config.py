@@ -19,13 +19,15 @@ else:
 class EntityTypeConfig:
     prefix: str
     allowed_statuses: list[str] = field(default_factory=list)
-    require_owner: bool = True
+    require_anchor: bool = True
     description: str = ""
 
 
 @dataclass
 class LedgerConfig:
+    schema_version: str = "1.0"
     registry_path: str = ".ledger/ENTITY_REGISTRY.md"
+    allow_gaps: bool = True  # Per V1 constraint: gaps are not errors by default
     doc_dirs: list[str] = field(default_factory=lambda: ["docs", ".ai/state", ".ai/handoff"])
     code_extensions: list[str] = field(default_factory=lambda: [".py", ".ts", ".js", ".go", ".rs", ".json"])
     ignore_globs: list[str] = field(default_factory=lambda: [
@@ -36,36 +38,25 @@ class LedgerConfig:
     @classmethod
     def default(cls) -> "LedgerConfig":
         cfg = cls()
+        # Minimal default types per RFC
         cfg.types = {
             "TASK": EntityTypeConfig(
                 prefix="TASK",
-                allowed_statuses=["BACKLOG", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"],
-                require_owner=True,
-                description="Engineering and research actionable tasks",
+                allowed_statuses=["BACKLOG", "READY", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"],
+                require_anchor=True,
+                description="Actionable engineering or research tasks",
             ),
             "DECISION": EntityTypeConfig(
                 prefix="DECISION",
                 allowed_statuses=["DRAFT", "IN_FORCE", "SUPERSEDED"],
-                require_owner=True,
-                description="Architectural rulings, design choices, and ADRs",
-            ),
-            "EXP": EntityTypeConfig(
-                prefix="EXP",
-                allowed_statuses=["PLANNED", "RUNNING", "VALIDATING", "DONE", "FAILED", "INVALID"],
-                require_owner=True,
-                description="Reproducible experiment runs and benchmarks",
+                require_anchor=True,
+                description="Architecture Decision Records and policy rulings",
             ),
             "ISSUE": EntityTypeConfig(
                 prefix="ISSUE",
                 allowed_statuses=["OPEN", "INVESTIGATING", "RESOLVED", "WONT_FIX"],
-                require_owner=True,
-                description="Defects, blockers, and regressions",
-            ),
-            "GATE": EntityTypeConfig(
-                prefix="GATE",
-                allowed_statuses=["DRAFT", "IN_FORCE", "SUPERSEDED", "DONE"],
-                require_owner=True,
-                description="Evaluation milestones and formal pass/fail criteria",
+                require_anchor=True,
+                description="Defects, regressions, and blockers",
             ),
         }
         return cfg
@@ -79,7 +70,9 @@ class LedgerConfig:
             data = tomllib.load(f)
 
         ledger_section = data.get("ledger", {})
+        schema_version = str(ledger_section.get("schema_version", "1.0"))
         registry_path = ledger_section.get("registry_path", ".ledger/ENTITY_REGISTRY.md")
+        allow_gaps = bool(ledger_section.get("allow_gaps", True))
         doc_dirs = ledger_section.get("doc_dirs", ["docs", ".ai/state", ".ai/handoff"])
         code_extensions = ledger_section.get("code_extensions", [".py", ".ts", ".js", ".go", ".rs", ".json"])
         ignore_globs = ledger_section.get("ignore_globs", [
@@ -93,14 +86,16 @@ class LedgerConfig:
                 types[type_name] = EntityTypeConfig(
                     prefix=t_data.get("prefix", type_name),
                     allowed_statuses=t_data.get("allowed_statuses", []),
-                    require_owner=t_data.get("require_owner", True),
+                    require_anchor=t_data.get("require_anchor", True),
                     description=t_data.get("description", ""),
                 )
         else:
             types = cls.default().types
 
         return cls(
+            schema_version=schema_version,
             registry_path=registry_path,
+            allow_gaps=allow_gaps,
             doc_dirs=doc_dirs,
             code_extensions=code_extensions,
             ignore_globs=ignore_globs,

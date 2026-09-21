@@ -1,0 +1,23 @@
+# Example RepoLedger Configuration
+[ledger]
+schema_version = "1.0"
+registry_path = ".ledger/ENTITY_REGISTRY.md"
+allow_gaps = true
+doc_dirs = ["docs"]
+code_extensions = [".py", ".json"]
+ignore_globs = ["node_modules/**", ".git/**"]
+
+[types.TASK]
+prefix = "TASK"
+allowed_statuses = ["BACKLOG", "READY", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"]
+require_anchor = true
+
+[types.DECISION]
+prefix = "DECISION"
+allowed_statuses = ["DRAFT", "IN_FORCE", "SUPERSEDED"]
+require_anchor = true
+
+[types.ISSUE]
+prefix = "ISSUE"
+allowed_statuses = ["OPEN", "INVESTIGATING", "RESOLVED", "WONT_FIX"]
+require_anchor = true

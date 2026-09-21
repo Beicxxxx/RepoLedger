@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import stat
 import sys
 from pathlib import Path
@@ -9,13 +10,14 @@ from typing import Optional
 
 from .config import LedgerConfig, find_config_file
 from .linter import lint_all
-from .registry import EntityRegistry
+from .registry import EntityRegistry, RegistryError
 
 
 DEFAULT_CONFIG_TEMPLATE = """# RepoLedger Configuration
 [ledger]
-version = "1.0"
+schema_version = "1.0"
 registry_path = ".ledger/ENTITY_REGISTRY.md"
+allow_gaps = true
 doc_dirs = ["docs", ".ai/state", ".ai/handoff"]
 code_extensions = [".py", ".ts", ".js", ".go", ".rs", ".json"]
 ignore_globs = [
@@ -24,38 +26,26 @@ ignore_globs = [
 
 [types.TASK]
 prefix = "TASK"
-allowed_statuses = ["BACKLOG", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"]
-require_owner = true
+allowed_statuses = ["BACKLOG", "READY", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"]
+require_anchor = true
 description = "Actionable engineering or research tasks"
 
 [types.DECISION]
 prefix = "DECISION"
 allowed_statuses = ["DRAFT", "IN_FORCE", "SUPERSEDED"]
-require_owner = true
+require_anchor = true
 description = "Architecture Decision Records and policy rulings"
-
-[types.EXP]
-prefix = "EXP"
-allowed_statuses = ["PLANNED", "RUNNING", "VALIDATING", "DONE", "FAILED", "INVALID"]
-require_owner = true
-description = "Reproducible experiments and benchmarks"
 
 [types.ISSUE]
 prefix = "ISSUE"
 allowed_statuses = ["OPEN", "INVESTIGATING", "RESOLVED", "WONT_FIX"]
-require_owner = true
+require_anchor = true
 description = "Defects, regressions, and blockers"
-
-[types.GATE]
-prefix = "GATE"
-allowed_statuses = ["DRAFT", "IN_FORCE", "SUPERSEDED", "DONE"]
-require_owner = true
-description = "Verification milestones and quality gates"
 """
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    root = Path.cwd()
+    root = (args.root or Path.cwd()).resolve()
     config_file = root / "ledger.toml"
     if config_file.exists() and not args.force:
         print(f"[repo-ledger] Config already exists at {config_file}. Use --force to overwrite.")
@@ -81,22 +71,75 @@ def cmd_allocate(args: argparse.Namespace) -> int:
     config = LedgerConfig.load(cfg_path) if cfg_path else LedgerConfig.default()
 
     reg_path = root / config.registry_path
+    if not reg_path.is_file():
+        print(f"[repo-ledger] Error: registry not found at {reg_path}. Run `repo-ledger init` first.", file=sys.stderr)
+        return 1
+
     registry = EntityRegistry.load(reg_path, config)
 
-    type_name = args.type.upper()
-    row = registry.allocate(
-        type_name=type_name,
-        name=args.name,
-        status=args.status,
-        parent=args.parent or "",
-        owner=args.owner or "",
-        supersedes=args.supersedes or "",
-        note=args.note or "",
-    )
-    registry.save()
+    # Support either --anchor or legacy --owner alias
+    anchor_val = args.anchor or args.owner or ""
 
-    print(f"[repo-ledger] Allocated: {row.id} - {row.name} ({row.status})")
-    print(f"             Registry updated: {reg_path}")
+    type_name = args.type.upper()
+    try:
+        row = registry.allocate(
+            type_name=type_name,
+            name=args.name,
+            status=args.status,
+            parent=args.parent or "",
+            anchor=anchor_val,
+            supersedes=args.supersedes or "",
+            note=args.note or "",
+        )
+    except RegistryError as exc:
+        print(f"[repo-ledger] Error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(row.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"[repo-ledger] Allocated: {row.id} - {row.name} ({row.status})")
+        print(f"             Anchor: {row.anchor or '(none)'}")
+        print(f"             Registry updated: {reg_path}")
+    return 0
+
+
+def cmd_lookup(args: argparse.Namespace) -> int:
+    cfg_path = find_config_file()
+    root = cfg_path.parent if cfg_path else Path.cwd()
+    config = LedgerConfig.load(cfg_path) if cfg_path else LedgerConfig.default()
+
+    reg_path = root / config.registry_path
+    if not reg_path.is_file():
+        print(f"[repo-ledger] Error: registry not found at {reg_path}", file=sys.stderr)
+        return 1
+
+    try:
+        registry = EntityRegistry.load(reg_path, config)
+    except RegistryError as exc:
+        print(f"[repo-ledger] Error reading registry: {exc}", file=sys.stderr)
+        return 1
+
+    row = registry.lookup(args.entity_id)
+    if not row:
+        if args.json:
+            print(json.dumps({"error": "NOT_FOUND", "entity": args.entity_id}, indent=2))
+        else:
+            print(f"[repo-ledger] Entity {args.entity_id!r} not found in registry.", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(row.to_dict(), indent=2, ensure_ascii=False))
+    else:
+        print(f"ID:         {row.id}")
+        print(f"Name:       {row.name}")
+        print(f"Status:     {row.status}")
+        print(f"Parent:     {row.parent or '(none)'}")
+        print(f"Anchor:     {row.anchor or '(none)'}")
+        print(f"Supersedes: {row.supersedes or '(none)'}")
+        print(f"Date:       {row.date}")
+        if row.note:
+            print(f"Note:       {row.note}")
     return 0
 
 
@@ -107,19 +150,41 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     reg_path = root / config.registry_path
     if not reg_path.is_file():
-        print(f"[repo-ledger] FAIL: Registry file not found at {reg_path}", file=sys.stderr)
+        err_msg = f"Registry file not found at {reg_path}"
+        if args.json:
+            print(json.dumps({"status": "FAIL", "issues": [{"code": "ERR_NO_REGISTRY", "message": err_msg}]}, indent=2))
+        else:
+            print(f"[repo-ledger] FAIL: {err_msg}", file=sys.stderr)
         return 1
 
-    registry = EntityRegistry.load(reg_path, config)
+    try:
+        registry = EntityRegistry.load(reg_path, config)
+    except RegistryError as exc:
+        if args.json:
+            print(json.dumps({"status": "FAIL", "issues": [{"code": "ERR_CORRUPT_REGISTRY", "message": str(exc)}]}, indent=2))
+        else:
+            print(f"[repo-ledger] FAIL: {exc}", file=sys.stderr)
+        return 1
+
     issues = lint_all(root, registry)
 
     if not issues:
-        print(f"[repo-ledger] PASS: All {len(registry.rows)} registered entities valid, zero dangling references.")
+        if args.json:
+            print(json.dumps({"status": "PASS", "entities_count": len(registry.rows), "issues": []}, indent=2))
+        else:
+            print(f"[repo-ledger] PASS: All {len(registry.rows)} registered entities valid, zero dangling references.")
         return 0
 
-    print(f"\n[repo-ledger] FAILED with {len(issues)} issue(s):")
-    for issue in issues:
-        print(f"  {issue}")
+    if args.json:
+        print(json.dumps({
+            "status": "FAIL",
+            "entities_count": len(registry.rows),
+            "issues": [i.to_dict() for i in issues],
+        }, indent=2, ensure_ascii=False))
+    else:
+        print(f"\n[repo-ledger] FAILED with {len(issues)} issue(s):")
+        for issue in issues:
+            print(f"  {issue}")
     return 1
 
 
@@ -145,7 +210,8 @@ def cmd_tree(args: argparse.Namespace) -> int:
 
     def print_node(node, prefix="", is_last=True):
         connector = "`-- " if is_last else "|-- "
-        print(f"{prefix}{connector}{node.id} [{node.status}] {node.name}")
+        anchor_info = f" -> {node.anchor}" if node.anchor else ""
+        print(f"{prefix}{connector}{node.id} [{node.status}] {node.name}{anchor_info}")
         child_prefix = prefix + ("    " if is_last else "|   ")
         ch_list = children.get(node.id, [])
         for i, ch in enumerate(ch_list):
@@ -166,9 +232,12 @@ def cmd_hook(args: argparse.Namespace) -> int:
             return 1
 
         hook_file = git_dir / "hooks" / "pre-commit"
-        hook_file.parent.mkdir(parents=True, exist_ok=True)
+        if hook_file.exists() and not args.force:
+            print(f"[repo-ledger] Error: hook already exists at {hook_file}. Refusing to overwrite without --force.", file=sys.stderr)
+            return 1
 
-        hook_script = "#!/bin/sh\nrepo-ledger check\n"
+        hook_file.parent.mkdir(parents=True, exist_ok=True)
+        hook_script = "#!/bin/sh\n# RepoLedger pre-commit validation\nrepo-ledger check\n"
         hook_file.write_text(hook_script, encoding="utf-8")
 
         # Make executable
@@ -189,23 +258,33 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # init
     p_init = subparsers.add_parser("init", help="Initialize repo-ledger configuration and registry")
+    p_init.add_argument("--root", type=Path, help="Target root directory")
     p_init.add_argument("--force", action="store_true", help="Overwrite existing configuration")
     p_init.set_defaults(func=cmd_init)
 
     # allocate
     p_alloc = subparsers.add_parser("allocate", help="Allocate the next sequential entity ID")
-    p_alloc.add_argument("type", help="Entity type (e.g. TASK, DECISION, EXP, ISSUE, GATE)")
+    p_alloc.add_argument("type", help="Entity type (e.g. TASK, DECISION, ISSUE)")
     p_alloc.add_argument("name", help="Short name or title of the entity")
     p_alloc.add_argument("--status", help="Initial status")
     p_alloc.add_argument("--parent", help="Parent entity ID")
-    p_alloc.add_argument("--owner", help="Authoritative artifact file path or commit hash")
+    p_alloc.add_argument("--anchor", help="Authoritative artifact file path or commit hash")
+    p_alloc.add_argument("--owner", help="Legacy alias for --anchor")
     p_alloc.add_argument("--supersedes", help="Previous entity ID this supersedes")
     p_alloc.add_argument("--note", help="Optional historical note or context")
+    p_alloc.add_argument("--json", action="store_true", help="Output JSON format")
     p_alloc.set_defaults(func=cmd_allocate)
 
+    # lookup
+    p_lookup = subparsers.add_parser("lookup", help="Query entity metadata by ID")
+    p_lookup.add_argument("entity_id", help="Entity ID to lookup (e.g. TASK-1)")
+    p_lookup.add_argument("--json", action="store_true", help="Output JSON format")
+    p_lookup.set_defaults(func=cmd_lookup)
+
     # check
-    p_check = subparsers.add_parser("check", help="Statically verify entity invariants and references")
+    p_check = subparsers.add_parser("check", help="Statically verify entity invariants and references (read-only)")
     p_check.add_argument("--root", type=Path, help="Root repository directory to scan")
+    p_check.add_argument("--json", action="store_true", help="Output structured JSON error report")
     p_check.set_defaults(func=cmd_check)
 
     # tree
@@ -215,6 +294,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # hook
     p_hook = subparsers.add_parser("hook", help="Manage git hooks")
     p_hook.add_argument("hook_action", choices=["install"], help="Action to perform")
+    p_hook.add_argument("--force", action="store_true", help="Overwrite existing pre-commit hook")
     p_hook.set_defaults(func=cmd_hook)
 
     args = parser.parse_args(argv)

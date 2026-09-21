@@ -1,22 +1,32 @@
 # RepoLedger 📜
 
-> **Git-native Entity & Knowledge Governance for AI Coding Agent Swarms.**  
-> Stop AI agents from hallucinating task numbers, drifting terminology, and inventing ungrounded dependencies.
+> **Git-native Entity & Knowledge Governance for AI Coding Agents.**  
+> Grounded task/decision identity, authoritative markdown ledger, and fail-closed reference linter.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Python: 3.10+](https://img.shields.io/badge/python-3.10+-brightgreen.svg)](https://python.org)
+[![Python: 3.11+](https://img.shields.io/badge/python-3.11+-brightgreen.svg)](https://python.org)
 [![Tests: Passing](https://img.shields.io/badge/tests-100%25%20passed-success.svg)](#)
 
 ---
 
-## 💡 Why RepoLedger?
+## 💡 What is RepoLedger?
 
-When AI coding assistants (Claude Code, Antigravity, Cursor, Codex) collaborate on projects across weeks and hundreds of commits, they inevitably suffer from:
-1. **Semantic Drift**: Creating inconsistent aliases (`B1.5`, `S1-b`, `Task 5`) that mutate across sessions.
-2. **Dangling References**: Claiming in docstrings or comments that a feature satisfies `TASK-99` when no such task exists.
-3. **Context Bloat**: Feeding megabytes of chat logs just so the incoming agent knows what is done and what is pending.
+When AI coding assistants (Claude Code, Antigravity, Cursor, Codex) collaborate across multiple sessions, machines, and weeks, tasks and decisions easily suffer from:
+1. **Dangling References**: Claiming in code comments, docstrings, or handoffs that work resolves an unregistered or hallucinated task ID.
+2. **Ungrounded Statuses**: Tasks marked "DONE" without an authoritative physical artifact to prove it.
+3. **Context Inflation**: Feeding megabytes of historical chat logs to incoming agents just to convey current project status.
 
-**RepoLedger** provides a **zero-dependency, Git-native, fail-closed** entity registry and static linter that guarantees 100% referential integrity across your entire codebase.
+**RepoLedger** provides a **zero-dependency, Git-native, fail-closed** entity registry and static reference linter. We promise strict **referential integrity and physical traceability**.
+
+---
+
+## 📦 Package & Skills Structure
+
+RepoLedger is organized as a single open-source repository containing a core Python CLI and two standalone, mutually compatible AI agent skills:
+
+* **Core Engine & CLI (`repo-ledger`)**: The deterministic Python CLI managing allocation, lookup, and static reference scanning.
+* **Skill 1: `repo-ledger` (`skills/repo-ledger/`)**: Teaches AI agents how to lookup active task anchors, allocate canonical IDs, and verify referential integrity.
+* **Skill 2: `cross-harness-sync` (`skills/cross-harness-sync/`)**: A zero-daemon Git-and-Markdown relay protocol managing multi-agent session handoffs (`CURRENT.md` + `NEXT_PROMPT.md`) and single-writer coordination.
 
 ---
 
@@ -36,85 +46,84 @@ uv add --dev repo-ledger
 repo-ledger init
 ```
 This generates:
-* `ledger.toml`: Configurable entity types (`TASK`, `DECISION`, `EXP`, `ISSUE`, `GATE`).
-* `.ledger/ENTITY_REGISTRY.md`: The single source of truth markdown ledger.
+* `ledger.toml`: Configurable entity types (`TASK`, `DECISION`, `ISSUE`), allowed statuses, and scanned extensions.
+* `.ledger/ENTITY_REGISTRY.md`: The authoritative structured markdown ledger (with schema versioning).
 
 ### 3. Allocate an Entity
 
 ```bash
-repo-ledger allocate TASK "Implement auth rate limiter" --owner src/auth/limiter.py --status IN_PROGRESS
+repo-ledger allocate TASK "Implement rate limiting" --anchor src/limiter.py --status IN_PROGRESS
 ```
 Output:
 ```
-[repo-ledger] Allocated: TASK-1 - Implement auth rate limiter (IN_PROGRESS)
+[repo-ledger] Allocated: TASK-1 - Implement rate limiting (IN_PROGRESS)
+             Anchor: src/limiter.py
              Registry updated: .ledger/ENTITY_REGISTRY.md
 ```
 
-### 4. Verify Codebase Invariants (Fail-Closed)
+### 4. Query Entity Metadata (`lookup`)
+
+```bash
+repo-ledger lookup TASK-1 --json
+```
+
+### 5. Statically Verify References (`check`)
 
 ```bash
 repo-ledger check
+# or structured JSON output:
+repo-ledger check --json
 ```
-If an agent writes `# Implements TASK-99` in any `.py`, `.ts`, or `.md` file without registering it, `repo-ledger` fails immediately:
+If an agent writes `# Implements TASK-99` in any tracked code or doc file without registering it, `repo-ledger` fails immediately with a stable error code and actionable suggestion:
 ```
-[repo-ledger] FAILED with 1 issue(s):
-  ERROR: src/worker.py:42: references unregistered entity 'TASK-99'
+[ERR_UNREGISTERED_ENTITY] src/worker.py:42: References unregistered entity 'TASK-99' (Suggestion: Allocate TASK-99 via `repo-ledger allocate TASK ...` or fix typo)
 ```
 
-### 5. Visualize Hierarchy
+### 6. Visualize Hierarchy (`tree`)
 
 ```bash
 repo-ledger tree
 ```
-Output:
-```
-Entity Hierarchy (4 entities):
-|-- TASK-1 [DONE] Root Infrastructure
-|   |-- TASK-2 [DONE] Database Schema
-|   `-- TASK-3 [IN_PROGRESS] API Gateway
-`-- DECISION-1 [IN_FORCE] Migrate to PostgreSQL
-```
 
-### 6. Install Git Hook
+### 7. Non-Destructive Git Hook (`hook install`)
 
 ```bash
 repo-ledger hook install
 ```
-Ensures no dangling or corrupted entity references can ever be committed.
+Installs a non-destructive `.git/hooks/pre-commit` hook that runs `repo-ledger check` before commits.
 
 ---
 
 ## ⚙️ Configuration (`ledger.toml`)
 
-Customize entity types, allowed statuses, and scanned paths:
-
 ```toml
 [ledger]
+schema_version = "1.0"
 registry_path = ".ledger/ENTITY_REGISTRY.md"
+allow_gaps = true
+doc_dirs = ["docs", ".ai/state", ".ai/handoff"]
 code_extensions = [".py", ".ts", ".js", ".go", ".rs", ".json"]
-ignore_globs = ["node_modules/**", "dist/**", ".git/**"]
+ignore_globs = [
+    "node_modules/**", "dist/**", "build/**", ".git/**", "tests/fixtures/**"
+]
 
 [types.TASK]
 prefix = "TASK"
-allowed_statuses = ["BACKLOG", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"]
-require_owner = true
+allowed_statuses = ["BACKLOG", "READY", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"]
+require_anchor = true
+description = "Actionable engineering or research tasks"
 
 [types.DECISION]
 prefix = "DECISION"
 allowed_statuses = ["DRAFT", "IN_FORCE", "SUPERSEDED"]
-require_owner = true
-```
+require_anchor = true
+description = "Architecture Decision Records and policy rulings"
 
----
-
-## 🤖 AI Agent Integration (Antigravity & Claude Code)
-
-Add a rule to your `AGENTS.md` or `CLAUDE.md`:
-```markdown
-## Entity Discipline
-- Every task, decision, and experiment must be formally allocated: `repo-ledger allocate <TYPE> <NAME> --owner <PATH>`.
-- Before committing, always verify with `repo-ledger check`.
-- Never invent unnumbered shorthand identifiers in code or prose.
+[types.ISSUE]
+prefix = "ISSUE"
+allowed_statuses = ["OPEN", "INVESTIGATING", "RESOLVED", "WONT_FIX"]
+require_anchor = true
+description = "Defects, regressions, and blockers"
 ```
 
 ---

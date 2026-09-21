@@ -1,8 +1,7 @@
-"""Comprehensive unit tests for RepoLedger core, CLI, allocator, and linter."""
+"""Comprehensive unit tests for RepoLedger core, CLI, allocator, lookup, and linter."""
 from __future__ import annotations
 
-import subprocess
-import sys
+import json
 from pathlib import Path
 
 from repo_ledger.cli import main
@@ -11,7 +10,7 @@ from repo_ledger.linter import lint_all
 from repo_ledger.registry import EntityRegistry
 
 
-def test_init_and_allocate_lifecycle(tmp_path: Path, monkeypatch):
+def test_init_allocate_and_lookup_lifecycle(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
 
     # 1. Run init
@@ -20,32 +19,39 @@ def test_init_and_allocate_lifecycle(tmp_path: Path, monkeypatch):
     assert (tmp_path / "ledger.toml").is_file()
     assert (tmp_path / ".ledger" / "ENTITY_REGISTRY.md").is_file()
 
-    # 2. Allocate TASK-1
-    test_file = tmp_path / "src" / "worker.py"
-    test_file.parent.mkdir(parents=True, exist_ok=True)
-    test_file.write_text("# Initial worker\n", encoding="utf-8")
+    # 2. Allocate TASK-1 with anchor
+    doc_file = tmp_path / "docs" / "proposal.md"
+    doc_file.parent.mkdir(parents=True, exist_ok=True)
+    doc_file.write_text("# Proposal doc\n", encoding="utf-8")
 
-    rc = main(["allocate", "TASK", "First Task", "--owner", "src/worker.py", "--status", "DONE"])
+    rc = main(["allocate", "TASK", "First Task", "--anchor", "docs/proposal.md", "--status", "DONE"])
     assert rc == 0
 
-    # 3. Allocate TASK-2 with parent TASK-1
-    rc = main(["allocate", "TASK", "Second Task", "--owner", "src/worker.py", "--parent", "TASK-1", "--status", "IN_PROGRESS"])
+    # 3. Lookup TASK-1 in text format
+    rc = main(["lookup", "TASK-1"])
     assert rc == 0
+    out = capsys.readouterr().out
+    assert "ID:         TASK-1" in out
+    assert "Anchor:     docs/proposal.md" in out
 
-    # Verify registry content
-    config = LedgerConfig.load(tmp_path / "ledger.toml")
-    registry = EntityRegistry.load(tmp_path / ".ledger" / "ENTITY_REGISTRY.md", config)
-    assert len(registry.rows) == 2
-    assert registry.rows[0].id == "TASK-1"
-    assert registry.rows[1].id == "TASK-2"
-    assert registry.rows[1].parent == "TASK-1"
+    # 4. Lookup TASK-1 in JSON format
+    rc = main(["lookup", "TASK-1", "--json"])
+    assert rc == 0
+    out_json = json.loads(capsys.readouterr().out)
+    assert out_json["id"] == "TASK-1"
+    assert out_json["name"] == "First Task"
+    assert out_json["anchor"] == "docs/proposal.md"
 
-    # 4. Check passes
+    # 5. Lookup non-existent entity
+    rc = main(["lookup", "TASK-999"])
+    assert rc == 1
+
+    # 6. Check passes cleanly
     rc = main(["check", "--root", str(tmp_path)])
     assert rc == 0
 
 
-def test_linter_catches_unregistered_reference(tmp_path: Path, monkeypatch):
+def test_linter_catches_unregistered_reference_with_stable_code(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init"])
 
@@ -58,56 +64,60 @@ def run():
     pass
 """, encoding="utf-8")
 
-    main(["allocate", "TASK", "Task One", "--owner", "app.py", "--status", "DONE"])
+    main(["allocate", "TASK", "Task One", "--anchor", "app.py", "--status", "DONE"])
+    capsys.readouterr()  # clear buffer
 
-    config = LedgerConfig.load(tmp_path / "ledger.toml")
-    registry = EntityRegistry.load(tmp_path / ".ledger" / "ENTITY_REGISTRY.md", config)
-    issues = lint_all(tmp_path, registry)
+    # Run check with --json
+    rc = main(["check", "--root", str(tmp_path), "--json"])
+    assert rc == 1
 
-    # Must catch TASK-99
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "FAIL"
+    issues = report["issues"]
     assert len(issues) == 1
-    assert "app.py:4" in issues[0].location
-    assert "TASK-99" in issues[0].message
+    assert issues[0]["code"] == "ERR_UNREGISTERED_ENTITY"
+    assert issues[0]["entity"] == "TASK-99"
+    assert "app.py:4" in issues[0]["location"]
 
 
-def test_linter_catches_serial_gap(tmp_path: Path, monkeypatch):
+def test_serial_gaps_not_errors_by_default(tmp_path: Path, monkeypatch):
+    """Per RFC constraint: serial gaps are not errors by default."""
     monkeypatch.chdir(tmp_path)
     main(["init"])
 
     src = tmp_path / "test.py"
     src.write_text("# code\n", encoding="utf-8")
 
-    # Manually create TASK-1 and TASK-3 (skipping TASK-2)
     config = LedgerConfig.load(tmp_path / "ledger.toml")
+    assert config.allow_gaps is True
+
     reg_path = tmp_path / ".ledger" / "ENTITY_REGISTRY.md"
     registry = EntityRegistry.load(reg_path, config)
-    registry.allocate("TASK", "Task 1", owner="test.py", status="DONE")
-    r3 = registry.allocate("TASK", "Task 3", owner="test.py", status="DONE")
+    registry.allocate("TASK", "Task 1", anchor="test.py", status="DONE")
+    r3 = registry.allocate("TASK", "Task 3", anchor="test.py", status="DONE")
     r3.id = "TASK-3"  # force gap
     registry.save()
 
+    # Gap exists, but allow_gaps=True -> no error!
     issues = lint_all(tmp_path, registry)
-    gap_issues = [i for i in issues if "gap" in i.message]
-    assert len(gap_issues) == 1
-    assert "[2]" in gap_issues[0].message
+    gap_issues = [i for i in issues if i.code == "ERR_SERIAL_GAP"]
+    assert len(gap_issues) == 0
 
 
-def test_linter_catches_invalid_status(tmp_path: Path, monkeypatch):
+def test_linter_catches_missing_anchor(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     main(["init"])
-
-    src = tmp_path / "test.py"
-    src.write_text("# code\n", encoding="utf-8")
 
     config = LedgerConfig.load(tmp_path / "ledger.toml")
     reg_path = tmp_path / ".ledger" / "ENTITY_REGISTRY.md"
     registry = EntityRegistry.load(reg_path, config)
-    registry.allocate("TASK", "Task 1", owner="test.py", status="TOTALLY_INVALID_STATUS")
+    registry.allocate("TASK", "Task 1", anchor="non_existent_file.py", status="DONE")
     registry.save()
 
     issues = lint_all(tmp_path, registry)
-    status_issues = [i for i in issues if "status 'TOTALLY_INVALID_STATUS'" in i.message]
-    assert len(status_issues) == 1
+    anchor_issues = [i for i in issues if i.code == "ERR_ANCHOR_NOT_FOUND"]
+    assert len(anchor_issues) == 1
+    assert "non_existent_file.py" in anchor_issues[0].reason
 
 
 def test_tree_command(tmp_path: Path, monkeypatch, capsys):
@@ -117,8 +127,8 @@ def test_tree_command(tmp_path: Path, monkeypatch, capsys):
     src = tmp_path / "test.py"
     src.write_text("# code\n", encoding="utf-8")
 
-    main(["allocate", "TASK", "Root Task", "--owner", "test.py", "--status", "DONE"])
-    main(["allocate", "TASK", "Child Task", "--owner", "test.py", "--parent", "TASK-1", "--status", "IN_PROGRESS"])
+    main(["allocate", "TASK", "Root Task", "--anchor", "test.py", "--status", "DONE"])
+    main(["allocate", "TASK", "Child Task", "--anchor", "test.py", "--parent", "TASK-1", "--status", "IN_PROGRESS"])
 
     rc = main(["tree"])
     assert rc == 0
