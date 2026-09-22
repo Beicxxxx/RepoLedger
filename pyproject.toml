@@ -32,7 +32,7 @@ test = ["pytest>=8"]
 name = "repo_ledger"
 
 [tool.flit.sdist]
-include = ["LICENSE", "docs/", "examples/", "skills/repo-ledger/", "tests/"]
+include = ["LICENSE", "docs/", "examples/", "scripts/", "skills/repo-ledger/", "tests/"]
 exclude = ["skills/cross-harness-sync/", ".test-runs/"]
 
 [tool.pytest.ini_options]

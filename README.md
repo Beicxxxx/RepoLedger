@@ -212,6 +212,18 @@ python -m pip install -e ".[test]"
 python -m pytest -v
 ```
 
+### 把 Skill 同步到本机各 harness
+
+`skills/repo-ledger/SKILL.md` 是唯一源文件；安装到各 harness 后需要同步更新：
+
+```sh
+python scripts/sync_skill.py            # 同步已安装的副本
+python scripts/sync_skill.py --check    # 只报告差异，有漂移时退出码 1
+python scripts/sync_skill.py --install  # 额外安装到存在但尚未安装的 harness
+```
+
+脚本按 SHA-256 比对，只处理已探测到的 harness Skill 根目录，不触碰其他 Skill。
+
 本轮验证：Windows、Python 3.14.5 上 **99 个测试通过**，覆盖 legacy 解码/唯一性、退役代号守卫、有限候选搜索、受锁状态更新与并发冲突，以及 Agent 工作流回归。另做了独立代理行为评测：未知简称与证据驱动更新通过；首轮评测发现“新文档复写旧别名”和“交接摘要漏 ID/名称”两处问题，修订 Skill 后重测通过，细节与局限见[验证记录](docs/validation.md)。这些结果来自本项目，未引用外部长期项目的测试或性能数字。
 
 | 路径 | 内容 |

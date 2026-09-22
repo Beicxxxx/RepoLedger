@@ -28,6 +28,14 @@ python -m pytest -v -p no:cacheprovider --basetemp .test-runs/final
 - 旧别名与草案（首轮失败）：代理正确把 `task36` 解析为 TASK-1，但把旧别名复写进新草案并因“未更新实体”跳过 check；同一批的独立交接摘要漏掉 ID 与登记名称。修正 Skill 后换新沙箱重测：草案只使用 TASK-1 及其登记名称，未复写旧别名，check PASS，registry/config 未变、无编号高水位。
 - 草案不铸号（独立代理）：`deepseek/deepseek-flash` 子代理在全新沙箱中搜索“缓存/cache”等关键词（0 命中），写入标注“草案，未立项，未分配 ID”的 notes.md 后 check PASS。主代理复核：未生成编号高水位、registry/config 哈希未变、草案未复写旧别名，并正确列出 TASK-1、TASK-36、ISSUE-1 作为主题相近候选。
 
+## Skill 同步到本机 harness
+
+本机已安装的 RepoLedger Skill 副本共 6 处：.codex、.agents、.claude、.cursor（skills 与 skills-cursor 两个根）、.qoder。同步前六处均为旧哈希
+`69A388216C8263AE2900E58A0DC9B62E84E6280FF805FEDA7DF28A8FDF7C2F04`，同步后全部等于仓库版本
+`909DBF0F045C1413594F99C7448FD261BE80595DF064B02F167016AA7314FE56`。
+新增 `scripts/sync_skill.py`（默认同步、`--check` 只报告、`--install` 补装），`--check` 运行结果为六处 same、退出码 0。
+`.gemini` brain scratch 下的同名目录是只读参考原型，不是安装副本，未改动；harness 自带 builtin skills 也未改动。
+
 评测过程中发现并已修复两个可观察缺陷（新文档复写退役别名；独立摘要漏登记名称），这正是把行为评测与单元测试分开记录的原因。
 
 ## 子代理模型记录
