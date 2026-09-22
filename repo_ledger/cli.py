@@ -14,8 +14,14 @@ DEFAULT_CONFIG_TEMPLATE = '''[ledger]
 schema_version = "1.0"
 registry_path = ".ledger/ENTITY_REGISTRY.md"
 allow_gaps = true
+# order defaults to the ID serial; set true to treat order as a render-only plan position.
+independent_order = false
 code_extensions = [".py", ".ts", ".js", ".go", ".rs", ".json", ".md"]
 ignore_globs = []
+
+# Exempt only declared non-registered tokens (for example teaching counterexamples).
+# [reference_exemptions]
+# "docs/example.md" = ["TASK-014"]
 
 [legacy_guard]
 enabled = true
@@ -41,7 +47,7 @@ def main(argv=None):
         if command == "allocate":
             p.add_argument("type")
             p.add_argument("name")
-            for flag in ("anchor", "status", "parent", "supersedes", "note", "legacy"):
+            for flag in ("anchor", "status", "parent", "supersedes", "note", "legacy", "order"):
                 p.add_argument("--" + flag, default=None if flag == "status" else "")
         if command == "lookup":
             p.add_argument("entity_id")
@@ -52,6 +58,7 @@ def main(argv=None):
             p.add_argument("entity_id")
             p.add_argument("--status")
             p.add_argument("--note")
+            p.add_argument("--order")
             p.add_argument("--expected-status")
         if command == "check":
             p.add_argument("--staged", action="store_true")
@@ -88,7 +95,7 @@ def main(argv=None):
         registry = EntityRegistry.load(safe_file(root, cfg.registry_path), cfg)
         if args.command == "allocate":
             row = registry.allocate(args.type, args.name, args.status, args.parent, args.anchor,
-                                    args.supersedes, args.note, args.legacy)
+                                    args.supersedes, args.note, args.legacy, args.order or None)
             output(row.to_dict())
         elif args.command == "search":
             result = search_entities(registry, args.query, args.limit)
@@ -100,7 +107,7 @@ def main(argv=None):
                     print(f"{row['id']} [{row['status']}] {row['name']} anchor={row['anchor'] or '-'}")
         elif args.command == "update":
             row = registry.update(args.entity_id, status=args.status, note=args.note,
-                                  expected_status=args.expected_status)
+                                  order=args.order, expected_status=args.expected_status)
             if args.json:
                 output(row.to_dict())
             else:
@@ -120,8 +127,21 @@ def main(argv=None):
             if issues:
                 issue = issues[0]
                 raise LedgerError(issue.code, issue.reason, issue.location, issue.entity)
+            # order is a render-only plan position; ledger rows stay in append-only serial order.
+            grouped = {}
             for row in registry.rows:
-                print(f"{row.id} [{row.status}] {row.name} parent={row.parent or '-'}")
+                grouped.setdefault(row.parent, []).append(row)
+
+            def order_key(candidate):
+                return (int(candidate.order) if candidate.order.isdigit() else 0, candidate.id)
+
+            def render(node, depth):
+                print(f"{'  ' * depth}{node.id} [{node.status}] {node.name} order={node.order}")
+                for child in sorted(grouped.get(node.id, []), key=order_key):
+                    render(child, depth + 1)
+
+            for top in sorted(grouped.get("", []), key=order_key):
+                render(top, 0)
         elif args.command == "check-legacy":
             legacy_issues, legacy_audit = scan_legacy(root, registry)
             scope = {"view": "worktree", "legacy_guard": legacy_audit}
@@ -171,6 +191,14 @@ def main(argv=None):
             issue.suggestion = "Resolve the alias with lookup, then update the returned current ID; never reassign the alias."
         elif issue.code == "ERR_REGISTRY_PATH_CHANGED":
             issue.suggestion = "Reload ledger.toml and lookup the entity in the configured registry before retrying."
+        elif issue.code == "ERR_ORDER_FIXED":
+            issue.suggestion = ("Leave order equal to the ID serial, or set "
+                                "independent_order = true in ledger.toml to replan it.")
+        elif issue.code == "ERR_DUPLICATE_ORDER":
+            issue.suggestion = ("Reuse no order within the same type and parent scope; "
+                                "choose a free value or let allocate pick the next one.")
+        elif issue.code == "ERR_INVALID_ORDER":
+            issue.suggestion = "Use a positive integer without leading zeros."
         if args.json:
             output({"status": "FAIL", "complete": False, "issues": [issue.to_dict()]})
         else:

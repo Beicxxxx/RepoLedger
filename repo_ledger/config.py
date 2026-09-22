@@ -11,6 +11,8 @@ DEFAULT_GUARD_SCOPE = [
     "*.md", "**/*.md",
 ]
 
+REFERENCE_TOKEN_RE = re.compile(r"[A-Z][A-Z_]*-[0-9]{1,}")
+
 
 def relative_path(value):
     return (isinstance(value, str) and bool(value) and "\\" not in value
@@ -28,6 +30,11 @@ def _guard_glob(value):
 def _guard_token(value):
     return (isinstance(value, str) and bool(value) and value == value.strip()
             and not any(ord(c) < 32 or c in "\x7f\x85\u2028\u2029" for c in value))
+
+
+def _reference_token(value):
+    """Exemptions name the exact token they silence; never a shape or a path."""
+    return isinstance(value, str) and bool(REFERENCE_TOKEN_RE.fullmatch(value))
 
 @dataclass
 class EntityTypeConfig:
@@ -54,8 +61,11 @@ class LedgerConfig:
     schema_version: str = "1.0"
     registry_path: str = ".ledger/ENTITY_REGISTRY.md"
     allow_gaps: bool = True
+    independent_order: bool = False
+    unique_order_within_scope: bool = False
     code_extensions: list[str] = field(default_factory=lambda: [".py", ".ts", ".js", ".go", ".rs", ".json", ".md"])
     ignore_globs: list[str] = field(default_factory=list)
+    reference_exemptions: dict[str, list[str]] = field(default_factory=dict)
     legacy_guard: LegacyGuardConfig = field(default_factory=LegacyGuardConfig)
     types: dict = field(default_factory=dict)
 
@@ -75,11 +85,13 @@ class LedgerConfig:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
             fail(str(exc))
-        if set(data) - {"ledger", "types", "legacy_guard"}:
+        if set(data) - {"ledger", "types", "legacy_guard", "reference_exemptions"}:
             fail("Unknown top-level configuration field")
         cfg = cls.default()
         section = data.get("ledger", {})
-        allowed = {"schema_version", "registry_path", "allow_gaps", "code_extensions", "ignore_globs", "doc_dirs"}
+        allowed = {"schema_version", "registry_path", "allow_gaps", "independent_order",
+                   "unique_order_within_scope",
+                   "code_extensions", "ignore_globs", "doc_dirs"}
         if not isinstance(section, dict) or set(section) - allowed:
             fail("Unknown ledger field (transition/evidence policies are not supported yet)")
         for key, value in section.items():
@@ -90,8 +102,9 @@ class LedgerConfig:
             setattr(cfg, key, value)
         if cfg.schema_version != "1.0" or not relative_path(cfg.registry_path):
             fail("Expected schema 1.0 and a safe repository-relative registry_path")
-        if type(cfg.allow_gaps) is not bool:
-            fail("allow_gaps must be boolean")
+        for key in ("allow_gaps", "independent_order", "unique_order_within_scope"):
+            if type(getattr(cfg, key)) is not bool:
+                fail(f"{key} must be boolean")
         for key in ("code_extensions", "ignore_globs"):
             value = getattr(cfg, key)
             if not isinstance(value, list) or not all(isinstance(x, str) and x for x in value):
@@ -130,6 +143,14 @@ class LedgerConfig:
                 for path, columns in value.items()):
                 fail(f"legacy_guard.{key} must map safe globs to distinct positive integer arrays")
         cfg.legacy_guard = guard
+        exemptions = data.get("reference_exemptions", {})
+        if not isinstance(exemptions, dict) or not all(
+            _guard_glob(path) and isinstance(tokens, list) and tokens
+            and all(_reference_token(token) for token in tokens)
+            and len(set(tokens)) == len(tokens)
+            for path, tokens in exemptions.items()):
+            fail("reference_exemptions must map safe file globs to distinct TYPE-N literal tokens")
+        cfg.reference_exemptions = {path: list(tokens) for path, tokens in exemptions.items()}
         if "types" in data:
             if not isinstance(data["types"], dict) or not data["types"]:
                 fail("types must be a nonempty table")

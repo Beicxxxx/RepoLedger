@@ -28,6 +28,13 @@ id、name、status、order、date 必填；anchor 默认必填，可按类型 re
 
 TYPE-N：类型为大写字母与下划线，首字母大写；N 为无前导零正整数。每类型行序严格递增，默认允许断号。取消/废弃通过状态保留记录，不删记录、不重排、不回收编号。类型与合法状态来自配置，未知配置项拒绝。旧 doc_dirs 兼容接受但不限制扫描目录，避免悄悄漏扫；建议不再配置它。
 
+## 表布局与 order 语义
+
+读取器只接受三种已声明布局，绝不猜测未知表头：规范十列（anchor，supersedes 在 legacy 之前）、项目十列（owner 即证据载体，legacy 在 supersedes 之前）、旧九列（无 legacy，首次保存升级为规范十列）。owner 与 anchor 指同一列的同一含义。写入沿用载入时的布局，新账本使用规范布局。
+
+默认 order 必须等于 ID 的十进制序号；independent_order = true 后 order 成为同一类型、同一 parent 作用域内的计划位置，可被 update --order 重排，只用于 tree 渲染，不参与身份、状态或完成判断。计划位置允许并列；unique_order_within_scope = true 才把同作用域重复视为错误。无论开关如何，order 都必须是正整数、不补零，依然禁止用 order 反推身份。
+
+
 ## 关系与状态
 
 parent 为可选单 ID；supersedes 为逗号分隔的多个不同 ID。分别验证目标存在、自引用和有向环；暂不定义混合两类边的环为违规。不引入通用图引擎或 derived_from。
@@ -69,6 +76,9 @@ JSON scope 给出 tracked、untracked、git_ignored、ignore_globs、scanned、e
 `legacy_guard` 声明扫描范围 `scope_globs`、范围排除 `exclude_globs`、整文件 `file_exemptions`、一基列号 `column_masks`、教学围栏 `fence_exemptions` 和一基行号 `string_line_exemptions`。每个命中给出文件、行列、旧 token/解析到的实体和可执行下一步；JSON scope 同时列出 scanned 与 excluded。登记表本身始终单独解析，不把其中的 legacy 定义误报为正文复活。
 
 豁免不是把规则改成“通过”：它们只缩小声明范围，并保留在审计输出中。守卫是行文本检查，不是 JSON 语义审计；它不证明生成的、转义的或只存在于 JSON 对象 key 语义中的旧词已被覆盖。引用守卫通过时，必须同时说明当次 scope、排除区和文件清单，不能只引用 pass 数。
+
+[reference_exemptions] 允许按文件 glob 声明未登记的字面 token，供教学反例或断言自身检查器的测试夹具使用。匹配是文件+token 双重精确，不使用形状正则；每次命中都会写入 scope.suppressed（含文件、行列、token，最多 50 条），审计可见。豁免只缩小未登记引用的报告范围，不改变已登记实体的校验，也不能隐藏同一文件里的其他 token。
+
 
 暂存区、提交树和增量未实现，显式参数返回 ERR_UNSUPPORTED_VIEW。后续 hook 必须读取 index 的配置、账本和文件，测试部分暂存；新增/修改可局部扫，删除/重命名/配置/账本/锚点影响应升级全量。CI 必须检查待合并结果的完整提交树。本地 hook 只是反馈入口，不应覆盖已有 hook；当前无 hook 安装命令。
 

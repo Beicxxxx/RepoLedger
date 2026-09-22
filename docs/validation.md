@@ -63,3 +63,19 @@ python -m repo_ledger --help、pyproject.toml 解析及 git diff --check 通过�
 2. 真实 Git 对象校验、历史 anchor、浅克隆诊断。
 3. 按实体类型/状态的完成证据及显式基线迁移策略。
 4. 构建与 Python/操作系统测试矩阵及可复现性能测量。
+## order 开关、窄豁免与跨仓库迁移
+
+新增 independent_order（order 变为同父计划位置，只用于渲染）与可选的 unique_order_within_scope；新增 reference_exemptions（按文件+token 的窄豁免，命中写入审计）；读取器新增项目 owner 十列布局，写入保持载入布局。RepoLedger 测试从 99 增至 **135 passed**，新增覆盖开关两种模式、同父作用域、非法值、并列计划位置、渲染顺序、旧守卫聚合、豁免的文件/token 精确性，以及 owner 布局的读写往返。
+
+迁移 F:/Papers and Projects/font-repertoire-expansion 的四处差距（该仓库 284 行、11 种类型，由自己的守卫维护）：
+
+1. order：91 行 order 不等于序号，属计划位置语义，由 independent_order = true 支持，未改一行数据。
+2. anchor：34 行锚点不是受控文件（28 个目录、6 行同一个提交哈希）。28 个目录改指目录内清单文件，其中 font/ 与 data/gate_a/arm_b/ 原本没有清单，新增两个只描述内容的 MANIFEST.md（未改任何数据）；6 行改指新增的 .ai/state/COMMIT_ANCHORS.md，其中记录提交 6042577 的完整哈希、日期与标题。
+3. schema/前言：补首行 schema 注释、清除裸 > 前言行。列序不改写：该项目的 owner 布局由旧守卫读取，改写会破坏旧守卫，因此让工具兼容该项目布局——与 order 的处理原则一致。
+4. 未登记引用：确认全库恰好 5 个 token、9 处出现（ID_STANDARD.md 的 TASK-014、EXPERIMENT-0017，三个测试文件的 GATE-99、TASK-57、TASK-99），全部是教学反例或断言自身检查器的夹具，按文件+token 声明豁免，scope.suppressed 逐条可查。
+
+顺带发现该表 3 处 note 含未转义反斜杠，按 RepoLedger 编码规则写为双反斜杠；读取值不变，文本显示为双反斜杠，这是该账本首次固定转义。
+
+验证：repo-ledger check --json 在该仓库 PASS（0 问题、9 条已声明抑制、扫描 2799 个文件）；其旧守卫 scripts/check_entity_registry.py --check 仍为 0 error(s)；.ai/sync_config.json 新增 extra_check 后 python .ai/scripts/sync_verify.py 全绿（13/13，其中 RepoLedger 检查 rc=0）。字体仓库的改动留在工作区，未提交、未推送。
+
+本轮同时把 repo-ledger 以 pip install -e 装到本机（Python 3.14），因此 sync_verify 可以直接调用 repo-ledger 命令；此前“未完成安装验证”的限制至此解除。

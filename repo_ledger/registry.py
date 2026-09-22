@@ -13,14 +13,33 @@ from .errors import LedgerError
 from .git import repository_root, safe_file
 
 TABLE_HEADER = ["id", "name", "status", "parent", "order", "anchor", "supersedes", "date", "legacy", "note"]
+OWNER_TABLE_HEADER = ["id", "name", "status", "parent", "order", "owner", "legacy", "supersedes", "date", "note"]
 LEGACY_TABLE_HEADER = ["id", "name", "status", "parent", "order", "anchor", "supersedes", "date", "note"]
+# Field order per accepted layout. "owner" and "anchor" name the same column: the evidence
+# carrier. RepoLedger writes the canonical layout; it reads the project layouts it was
+# told about, and never guesses an unknown header.
+CANONICAL_FIELDS = ("id", "name", "status", "parent", "order", "anchor", "supersedes", "date", "legacy", "note")
+OWNER_FIELDS = ("id", "name", "status", "parent", "order", "anchor", "legacy", "supersedes", "date", "note")
+LEGACY_FIELDS = ("id", "name", "status", "parent", "order", "anchor", "supersedes", "date", "note")
+LAYOUTS = {
+    tuple(TABLE_HEADER): CANONICAL_FIELDS,
+    tuple(OWNER_TABLE_HEADER): OWNER_FIELDS,
+    tuple(LEGACY_TABLE_HEADER): LEGACY_FIELDS,
+}
 RegistryError = LedgerError
 ID_RE = re.compile(r"([A-Z][A-Z_]*)-([1-9][0-9]*)")
+ORDER_RE = re.compile(r"[1-9][0-9]*")
 
 def encode(value):
     if value != value.strip() or any(ord(c) < 32 or c in "\x7f\x85\u2028\u2029" for c in value):
         raise LedgerError("ERR_INVALID_FIELD", "Fields cannot contain control characters or outer whitespace")
     return value.replace("\\", "\\\\").replace("|", "\\|")
+
+
+def format_row(row, fields=CANONICAL_FIELDS):
+    """Serialize a row in the given layout; the writer always encodes field content."""
+    values = asdict(row)
+    return "| " + " | ".join(encode(values[field]) for field in fields) + " |"
 
 def _split_row_cells(line, expected_columns=None):
     if not line.startswith("|") or not line.endswith("|"):
@@ -64,9 +83,7 @@ class EntityRow:
         return asdict(self)
 
     def to_markdown_row(self):
-        values = [self.id, self.name, self.status, self.parent, self.order,
-                  self.anchor, self.supersedes, self.date, self.legacy, self.note]
-        return "| " + " | ".join(encode(v) for v in values) + " |"
+        return format_row(self)
 
 def atomic_write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +125,8 @@ class EntityRegistry:
         self.rows = []
         self.lines = {}
         self.preamble_lines = ["<!-- schema: 1.0 -->", "# Entity Registry", ""]
+        self.fields = CANONICAL_FIELDS
+        self.table_header = list(TABLE_HEADER)
 
     @classmethod
     def load(cls, path, config):
@@ -131,9 +150,10 @@ class EntityRegistry:
                 except LedgerError as exc:
                     exc.issue.location = f"{path}:{n}:1"
                     raise
-                if cells not in (TABLE_HEADER, LEGACY_TABLE_HEADER):
+                if tuple(cells) not in LAYOUTS:
                     raise LedgerError("ERR_HEADER", "Unexpected table header", f"{path}:{n}:1")
                 table_header = cells
+                fields = LAYOUTS[tuple(cells)]
                 header = n - 1
             elif header is None and n > 1 and line and not line.startswith(("# ", "> ")):
                 raise LedgerError("ERR_ROW_FORMAT", "Unexpected content before table", f"{path}:{n}:1")
@@ -147,19 +167,19 @@ class EntityRegistry:
         if separator != ["---"] * len(table_header):
             raise LedgerError("ERR_HEADER", f"Expected {len(table_header)} --- separator cells", f"{path}:{header+2}:1")
         reg.preamble_lines = lines[:header]
+        reg.table_header = list(table_header)
+        reg.fields = fields
         seen, seen_legacy, serials = set(), set(), {}
+        seen_order = {}
         for n in range(header + 2, len(lines)):
             if not lines[n].strip():
                 continue
             row = None
             try:
                 cells = _split_row_cells(lines[n], len(table_header))
-                if table_header == LEGACY_TABLE_HEADER:
-                    cells.append("")
-                else:
-                    # Preserve the old field positions and insert legacy before note.
-                    cells = cells[:8] + [cells[9], cells[8]]
-                row = EntityRow(*cells)
+                values = {field: cells[index] for index, field in enumerate(fields)}
+                values.setdefault("legacy", "")
+                row = EntityRow(**values)
                 match = ID_RE.fullmatch(row.id)
                 if not match or match[1] not in config.types:
                     raise LedgerError("ERR_INVALID_ID_FORMAT", "Unknown type or noncanonical ID")
@@ -176,8 +196,24 @@ class EntityRegistry:
                     raise LedgerError("ERR_SERIAL_ORDER", "Rows must increase per type")
                 if not config.allow_gaps and serial != serials.get(typ, 0) + 1:
                     raise LedgerError("ERR_SERIAL_GAP", "Gap prohibited by configuration; never reuse issued IDs")
-                if not row.name or not row.date or row.order != str(serial):
-                    raise LedgerError("ERR_INVALID_FIELD", "name/date required; order must equal ID serial")
+                if not row.name or not row.date:
+                    raise LedgerError("ERR_INVALID_FIELD", "name and date are required")
+                if config.independent_order:
+                    # order is a render-only plan position, never an identity or status signal.
+                    if not ORDER_RE.fullmatch(row.order):
+                        raise LedgerError("ERR_INVALID_ORDER",
+                                          "order must be a positive integer without leading zeros")
+                    if config.unique_order_within_scope:
+                        scope = (typ, row.parent, row.order)
+                        if scope in seen_order:
+                            raise LedgerError(
+                                "ERR_DUPLICATE_ORDER",
+                                f"order {row.order} is already used by {seen_order[scope]} "
+                                "in the same type and parent scope")
+                        seen_order[scope] = row.id
+                elif row.order != str(serial):
+                    raise LedgerError("ERR_INVALID_FIELD",
+                                      "order must equal the ID serial unless independent_order is enabled")
                 try:
                     if datetime.date.fromisoformat(row.date).isoformat() != row.date:
                         raise ValueError()
@@ -205,10 +241,15 @@ class EntityRegistry:
         return reg
 
     def save(self):
+        # A nine-column registry upgrades on first save; recognised ten-column layouts are kept.
+        upgrading = self.table_header == LEGACY_TABLE_HEADER
+        header = list(TABLE_HEADER) if upgrading else list(self.table_header)
+        fields = CANONICAL_FIELDS if upgrading else self.fields
         text = "\n".join(self.preamble_lines + [
-            "| " + " | ".join(TABLE_HEADER) + " |",
-            "| " + " | ".join(["---"] * len(TABLE_HEADER)) + " |",
-            *(row.to_markdown_row() for row in self.rows), ""])
+            "| " + " | ".join(header) + " |",
+            "| " + " | ".join(["---"] * len(header)) + " |",
+            *(format_row(row, fields) for row in self.rows), ""])
+        self.table_header, self.fields = header, fields
         atomic_write(self.path, text)
 
     def lookup(self, entity_id):
@@ -226,7 +267,14 @@ class EntityRegistry:
         safe_file(root, self.config.registry_path)
         return root
 
-    def allocate(self, type_name, name="", status=None, parent="", anchor="", supersedes="", note="", legacy=""):
+    def _next_order(self, type_name, parent):
+        used = [int(row.order) for row in self.rows
+                if row.parent == parent and row.id.rsplit("-", 1)[0] == type_name
+                and ORDER_RE.fullmatch(row.order)]
+        return max(used, default=0) + 1
+
+    def allocate(self, type_name, name="", status=None, parent="", anchor="", supersedes="",
+                 note="", legacy="", order=None):
         from .linter import check_registry_invariants
         root = self._main_worktree_root()
         state_path = root / ".git" / "repo-ledger-serials.json"
@@ -250,10 +298,22 @@ class EntityRegistry:
                 typ, number = row.id.rsplit("-", 1)
                 state[typ] = max(state.get(typ, 0), int(number))
             serial = state.get(type_name, 0) + 1
+            if not self.config.independent_order:
+                if order is not None:
+                    raise LedgerError("ERR_ORDER_FIXED",
+                                      "--order requires independent_order = true in ledger.toml")
+                planned = str(serial)
+            elif order is None:
+                planned = str(self._next_order(type_name, parent))
+            elif not ORDER_RE.fullmatch(order):
+                raise LedgerError("ERR_INVALID_ORDER",
+                                  "--order must be a positive integer without leading zeros")
+            else:
+                planned = order
             row = EntityRow(f"{type_name}-{serial}", name, status or self.config.types[type_name].allowed_statuses[0],
-                            parent, str(serial), anchor, supersedes, datetime.date.today().isoformat(), note, legacy)
+                            parent, planned, anchor, supersedes, datetime.date.today().isoformat(), note, legacy)
             # Validate the exact serialized candidate before either durable write.
-            row.to_markdown_row()
+            format_row(row, self.fields)
             if not name or row.status not in self.config.types[type_name].allowed_statuses:
                 raise LedgerError("ERR_INVALID_STATUS" if name else "ERR_INVALID_FIELD", "Supply a name and legal status", entity=row.id)
             if legacy and any(existing.legacy == legacy for existing in self.rows):
@@ -264,6 +324,15 @@ class EntityRegistry:
                 raise LedgerError("ERR_LEGACY_COLLISION", "A current ID cannot also be a legacy alias", entity=row.id)
             if parent and not ID_RE.fullmatch(parent):
                 raise LedgerError("ERR_INVALID_RELATION", "parent must be one ID", entity=row.id)
+            if self.config.independent_order and self.config.unique_order_within_scope:
+                clash = next((existing for existing in self.rows
+                              if existing.parent == parent
+                              and existing.id.rsplit("-", 1)[0] == type_name
+                              and existing.order == planned), None)
+                if clash is not None:
+                    raise LedgerError("ERR_DUPLICATE_ORDER",
+                                      f"order {planned} is already used by {clash.id} "
+                                      "in the same type and parent scope", entity=clash.id)
             targets = [s.strip() for s in supersedes.split(",")] if supersedes else []
             if len(set(targets)) != len(targets) or any(not ID_RE.fullmatch(t) for t in targets):
                 raise LedgerError("ERR_INVALID_RELATION", "Invalid supersedes list", entity=row.id)
@@ -276,12 +345,13 @@ class EntityRegistry:
             self.save()
             return row
 
-    def update(self, entity_id, *, status=None, note=None, expected_status=None):
-        """Update only mutable status and note fields under the allocation lock."""
+    def update(self, entity_id, *, status=None, note=None, order=None, expected_status=None):
+        """Update mutable status, note and (when enabled) plan order under the allocation lock."""
         from .linter import check_registry_invariants
 
-        if status is None and note is None:
-            raise LedgerError("ERR_NO_UPDATE", "Supply status and/or note to update", entity=entity_id)
+        if status is None and note is None and order is None:
+            raise LedgerError("ERR_NO_UPDATE",
+                              "Supply status, note, and/or order to update", entity=entity_id)
 
         root = self._main_worktree_root("update")
         with FileLock(root / ".git" / "repo-ledger-allocate.lock"):
@@ -314,6 +384,26 @@ class EntityRegistry:
             type_name = row.id.rsplit("-", 1)[0]
             next_status = row.status if status is None else status
             next_note = row.note if note is None else note
+            next_order = row.order
+            if order is not None:
+                if not latest_config.independent_order:
+                    raise LedgerError("ERR_ORDER_FIXED",
+                                      "order is fixed to the ID serial; enable independent_order to replan it",
+                                      location, entity=row.id)
+                if not ORDER_RE.fullmatch(order):
+                    raise LedgerError("ERR_INVALID_ORDER",
+                                      "order must be a positive integer without leading zeros",
+                                      location, entity=row.id)
+                clash = next((other for other in fresh.rows
+                              if latest_config.unique_order_within_scope
+                              and other.id != row.id and other.parent == row.parent
+                              and other.id.rsplit("-", 1)[0] == type_name
+                              and other.order == order), None)
+                if clash is not None:
+                    raise LedgerError("ERR_DUPLICATE_ORDER",
+                                      f"order {order} is already used by {clash.id} "
+                                      "in the same type and parent scope", location, entity=row.id)
+                next_order = order
             if status is not None and (not isinstance(status, str)
                                        or status not in latest_config.types[type_name].allowed_statuses):
                 raise LedgerError("ERR_INVALID_STATUS", "Status is not in the type vocabulary",
@@ -328,9 +418,9 @@ class EntityRegistry:
                     exc.issue.entity = row.id
                     raise
 
-            candidate = replace(row, status=next_status, note=next_note)
+            candidate = replace(row, status=next_status, note=next_note, order=next_order)
             try:
-                candidate.to_markdown_row()
+                format_row(candidate, fresh.fields)
             except LedgerError as exc:
                 exc.issue.location = location
                 exc.issue.entity = row.id

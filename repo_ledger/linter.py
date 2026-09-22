@@ -68,11 +68,15 @@ def scan(root, registry):
     audit = {"view": "worktree", "scope": "full configured text scope",
              "tracked": sorted(tracked), "untracked": sorted(new),
              "git_ignored": git_ignored, "ignore_globs": cfg.ignore_globs,
-             "scanned": [], "excluded": []}
+             "reference_exemptions": {path: list(tokens)
+                                      for path, tokens in cfg.reference_exemptions.items()},
+             "suppressed": [], "scanned": [], "excluded": []}
     issues = []
     prefixes = "|".join(re.escape(t) for t in cfg.types)
     pattern = re.compile(rf"(?<![\w-])(?:{prefixes})-[0-9]+(?![\w-])")
     known = {r.id for r in registry.rows}
+    exemptions = [(path, set(tokens)) for path, tokens in cfg.reference_exemptions.items()
+                  if cfg.reference_exemptions]
     for rel in sorted(tracked | new):
         reason = None
         if rel == cfg.registry_path:
@@ -94,9 +98,19 @@ def scan(root, registry):
         for number, line in enumerate(content.splitlines(), 1):
             for match in pattern.finditer(line):
                 if match[0] not in known:
+                    exemption = next((tokens for path, tokens in exemptions
+                                      if _matches_glob(rel, path) and match[0] in tokens), None)
+                    if exemption is not None:
+                        # Narrow, declared suppression: recorded, never silent.
+                        if len(audit["suppressed"]) < 50:
+                            audit["suppressed"].append(
+                                {"file": rel, "line": number, "column": match.start() + 1,
+                                 "token": match[0]})
+                        continue
                     issues.append(Issue("ERR_UNREGISTERED_ENTITY", f"{rel}:{number}:{match.start()+1}",
                                         match[0], "Reference has no registered entity",
-                                        "Lookup existing entities; fix a typo or explicitly allocate a genuinely new entity."))
+                                        "Lookup existing entities; fix a typo, allocate a genuinely "
+                                        "new entity, or declare a narrow reference_exemptions token."))
     return issues, audit
 
 
