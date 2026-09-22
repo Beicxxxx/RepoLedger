@@ -8,6 +8,7 @@ from .errors import LedgerError
 from .git import repository_root, safe_file
 from .linter import aggregate, check_registry_invariants, scan, scan_legacy
 from .registry import EntityRegistry
+from .search import search_entities
 
 DEFAULT_CONFIG_TEMPLATE = '''[ledger]
 schema_version = "1.0"
@@ -33,7 +34,7 @@ def output(value):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="repo-ledger")
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("init", "allocate", "lookup", "check", "check-legacy", "tree"):
+    for command in ("init", "allocate", "lookup", "search", "update", "check", "check-legacy", "tree"):
         p = commands.add_parser(command)
         p.add_argument("--root", type=Path)
         p.add_argument("--json", action="store_true")
@@ -44,6 +45,14 @@ def main(argv=None):
                 p.add_argument("--" + flag, default=None if flag == "status" else "")
         if command == "lookup":
             p.add_argument("entity_id")
+        if command == "search":
+            p.add_argument("query")
+            p.add_argument("--limit", type=int, default=5)
+        if command == "update":
+            p.add_argument("entity_id")
+            p.add_argument("--status")
+            p.add_argument("--note")
+            p.add_argument("--expected-status")
         if command == "check":
             p.add_argument("--staged", action="store_true")
             p.add_argument("--commit")
@@ -81,6 +90,21 @@ def main(argv=None):
             row = registry.allocate(args.type, args.name, args.status, args.parent, args.anchor,
                                     args.supersedes, args.note, args.legacy)
             output(row.to_dict())
+        elif args.command == "search":
+            result = search_entities(registry, args.query, args.limit)
+            if args.json:
+                output(result)
+            else:
+                print(f"{result['total']} matches; showing {len(result['results'])}")
+                for row in result["results"]:
+                    print(f"{row['id']} [{row['status']}] {row['name']} anchor={row['anchor'] or '-'}")
+        elif args.command == "update":
+            row = registry.update(args.entity_id, status=args.status, note=args.note,
+                                  expected_status=args.expected_status)
+            if args.json:
+                output(row.to_dict())
+            else:
+                print(f"Updated {row.id} [{row.status}] {row.name}")
         elif args.command == "lookup":
             row = registry.lookup(args.entity_id)
             if row is None:
@@ -135,6 +159,18 @@ def main(argv=None):
         if not isinstance(exc, LedgerError):
             exc = LedgerError("ERR_READ_WRITE", str(exc), category="incomplete")
         issue = exc.issue
+        if issue.code == "ERR_UPDATE_CONFLICT":
+            issue.suggestion = "Run lookup again, review the current evidence, and retry only if the update is still valid."
+        elif issue.code == "ERR_NO_UPDATE":
+            issue.suggestion = "Specify --status and/or --note; use an empty --note to clear the note."
+        elif issue.code == "ERR_SEARCH_QUERY":
+            issue.suggestion = "Supply a nonblank literal keyword, ID, or documented legacy alias."
+        elif issue.code == "ERR_SEARCH_LIMIT":
+            issue.suggestion = "Choose --limit from 1 through 100; the default is 5."
+        elif issue.code == "ERR_LEGACY_READONLY":
+            issue.suggestion = "Resolve the alias with lookup, then update the returned current ID; never reassign the alias."
+        elif issue.code == "ERR_REGISTRY_PATH_CHANGED":
+            issue.suggestion = "Reload ledger.toml and lookup the entity in the configured registry before retrying."
         if args.json:
             output({"status": "FAIL", "complete": False, "issues": [issue.to_dict()]})
         else:

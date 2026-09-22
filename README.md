@@ -48,7 +48,7 @@ python examples/demo.py
                          写入 TASK-999 → 检出未登记引用
 ```
 
-这个演示无需安装 Python 依赖，也不会更改当前项目的账本。可以用 `python -m repo_ledger --help` 查看命令。
+演示还包含有限候选搜索与附带旧状态条件的更新。无需安装 Python 依赖，也不会更改当前项目的账本。可以用 `python -m repo_ledger --help` 查看命令。
 
 ### 2. 安装本地 CLI
 
@@ -109,11 +109,17 @@ repo-ledger check --json
 | `repo-ledger init` | 初始化配置和带 schema 的账本 |
 | `repo-ledger allocate TASK "Title" --anchor docs/proposal.md` | 校验锚点并分配新 ID |
 | `repo-ledger lookup TASK-1 --json` | 按当前 ID 或历史 `legacy` 别名返回当前实体 |
+| `repo-ledger search "rate" --json --limit 5` | 按 ID、名称或 legacy 字面子串查找有限候选 |
+| `repo-ledger update TASK-1 --status READY --expected-status BACKLOG --json` | 在短锁内校验并更新状态；可用 `--note` 更新备注 |
 | `repo-ledger check --json` | 只读校验工作树，输出诊断和可审计的扫描范围 |
 | `repo-ledger check-legacy --json` | 单独运行退役代号守卫；`check` 已自动聚合它 |
 | `repo-ledger tree` | 输出简易实体与父关系列表 |
 
 查询输出不会展开整个账本；内部仍严格解析全账本。退出码：`0` 通过，`1` 规则违规，`2` 配置错误或不支持的能力，`3` 扫描/I/O 未完成。
+
+搜索忽略大小写，不猜测简称、不使用正则或语义相似度。默认最多返回 5 条，`--limit` 范围为 1–100；`total` 表示全部命中数。先核对候选并 lookup，再判断是否需要新实体。没有搜索命中不等于语义上不存在重复任务。
+
+更新只接受当前 ID，只能修改 status/note，不能借 legacy 改派实体。锁内重新读取配置和账本后原子写入，与 allocate 使用同一短锁。`--expected-status` 可检测状态是否已被他人更改；冲突时重新查询和判断，不盲目重试。它不检测同状态的备注覆盖或状态往返，也不是跨克隆事务。`--note ""` 清空备注；状态合法并不证明工作完成，迁移矩阵仍未实现。
 
 ## 配置
 
@@ -152,11 +158,12 @@ string_line_exemptions = {}
 使用 [RepoLedger Skill](skills/repo-ledger/SKILL.md)，或将以下约定纳入项目已有的 Agent 指令：
 
 ```markdown
-- 引用或创建实体前，先检查相关已有记录，并用 repo-ledger lookup <ID> --json 查询。
+- 引用前按原文 lookup；创建前 search 相关关键词，再 lookup 候选。不把 task36 等模糊简称自动改成当前 ID。
 - 如果引用来自冻结页、旧提交说明或授权文本，先用同一个 lookup 解码 legacy，再在新正文写当前 ID；外部标准记号不进入 legacy 映射。
 - 新实体必须通过 allocate 分配；使用命令返回的 ID，不自行猜号。
-- 按需读取单实体及其 anchor，不在启动时加载整个账本。
-- 状态更新应依据明确证据，更新后运行 repo-ledger check --json。
+- 按需读取单实体及其 anchor；同一账本上下文中复用已核实结果，账本变化、切换分支/工作区或交接后刷新，不在启动时加载整个账本。
+- 独立交接摘要包含当前 ID 与完整登记名称；新文档不复写旧别名，草案也应在写入后运行 check，但不铸号。
+- 状态更新应依据明确证据，通过 update 的 --status/--note 和 --expected-status 写入，随后运行 check --json。
 - 遇到错误先定位原因，不伪造登记、不扩大忽略范围以绕过检查；退役代号命中时运行 check-legacy 并修复或留下窄范围豁免。
 - 草案、任务书和评审文本不铸号；只有落地提交内才分配并写入新 ID。锁只保护一次分配，不是跨克隆的唯一性证明。
 ```
@@ -183,13 +190,14 @@ Agent A 在交接文档中引用 `TASK-1`，Agent B 读取运行上下文后执�
 | --- | --- |
 | 严格 Markdown 解析、字段转义、合法状态集合、直接关系校验 | 已实现 |
 | legacy 列、非空别名唯一性、按 legacy lookup 当前 ID | 已实现；旧 9 列账本可读取，写回时升级表头 |
+| 有限候选搜索、状态/备注 update | 已实现；状态更新可附带旧状态校验，不提供语义查重或完成判定 |
 | 受控工作树文件锚点、未知引用检测、JSON 诊断与重复问题聚合 | 已实现 |
 | 枚举字面量退役代号守卫、分层豁免、聚合到 `check` | 已实现；JSON key 语义审计仍是盲区 |
 | 主工作区短锁、锁内重新读取、编号高水位、原子文件替换 | 已实现；支持同一主工作区多个本地进程分配 |
 | order 渲染视图、决策提交台账、批量改名映射、digest lineage | 未实现；明确拒绝把日期、锁或摘要猜测当作替代机制 |
 | 历史锚点：commit:path、完整 commit 对象 ID | 未实现，明确拒绝 |
 | 暂存区、增量、提交树检查 | 未实现；相关参数明确拒绝，绝不回退为工作树检查 |
-| 状态迁移基线、完成证据策略、历史删除审计、标题搜索 | 后续工作 |
+| 状态迁移基线、完成证据策略、历史删除审计 | 后续工作 |
 | hook install、CI 合并门禁 | 尚未提供 |
 | 多 worktree 或跨克隆铸号 | 不支持；linked worktree 分配明确拒绝 |
 
@@ -204,7 +212,7 @@ python -m pip install -e ".[test]"
 python -m pytest -v
 ```
 
-本轮验证：Windows、Python 3.14.5 上 **66 个测试通过**，新增覆盖 legacy 解码/唯一性、旧表兼容、退役代号守卫、聚合接入和分层豁免。完整环境、命令与未验证项见[验证记录](docs/validation.md)。这些结果来自本项目，未引用外部长期项目的测试或性能数字。
+本轮验证：Windows、Python 3.14.5 上 **99 个测试通过**，覆盖 legacy 解码/唯一性、退役代号守卫、有限候选搜索、受锁状态更新与并发冲突，以及 Agent 工作流回归。另做了独立代理行为评测：未知简称与证据驱动更新通过；首轮评测发现“新文档复写旧别名”和“交接摘要漏 ID/名称”两处问题，修订 Skill 后重测通过，细节与局限见[验证记录](docs/validation.md)。这些结果来自本项目，未引用外部长期项目的测试或性能数字。
 
 | 路径 | 内容 |
 | --- | --- |

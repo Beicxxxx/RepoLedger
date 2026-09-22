@@ -19,12 +19,12 @@ RepoLedger 管理实体身份、状态、关系与锚点；cross-harness-sync �
 Agent A：
 1. 遵守 AGENTS.md 与独立 sync 的启动协议，读 CURRENT.md 和 NEXT_PROMPT.md 了解关注点。
 2. 对提及的 TASK-1 执行 `repo-ledger lookup TASK-1 --json`，按需读 anchor。
-3. 新任务用 allocate，状态只在 RepoLedger 账本维护。根据证据更新 note/status 后 check。
+3. 创建前 search 候选，落地时新任务用 allocate；状态只在 RepoLedger 账本维护。根据证据用 update 的 --status/--note 和 --expected-status 更新后 check。
 4. 使用 sync 自己的交接流程记录“当前关注 TASK-1，原因是边界测试仍待验证，下一步检查失败案例”；不要再维护一张权威任务状态表。
 
 Agent B：
 1. 读取同样的运行上下文和项目强制指令。
-2. 仅 lookup 交接涉及的 ID 及其锚点，不输出整个 ENTITY_REGISTRY.md。
+2. 交接使先前查询缓存失效；重新 lookup 涉及的 ID 及其锚点，不输出整个 ENTITY_REGISTRY.md。
 3. 从证据与下一步继续，完成后更新 RepoLedger 记录，并由 sync 叙述关注点变化。
 
-这称为“按需上下文”，不声称零 Token 成本。RepoLedger 不执行 pull/push，也不生成交接文档。sync 的会话咨询锁协调其工作交接；RepoLedger 的短锁只保护一次分配，两者不能互相替代，更不是跨克隆原子锁。
+这称为“按需上下文”，不声称零 Token 成本。RepoLedger 不执行 pull/push，也不生成交接文档。sync 的会话咨询锁协调其工作交接；RepoLedger 的短锁保护一次分配或状态/备注更新，两者不能互相替代，更不是跨克隆原子锁。

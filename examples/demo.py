@@ -29,6 +29,9 @@ if __name__ == "__main__":
         run(root, "init")
         row = run(root, "allocate", "TASK", "max|SMD| proposal", "--anchor", "proposal.md")
         run(root, "lookup", row["id"])
+        run(root, "search", "max|SMD|", "--limit", "5")
+        run(root, "update", row["id"], "--status", "READY", "--expected-status", row["status"],
+            "--note", "Proposal recorded; implementation still pending.")
         run(root, "check")
         (root / "next.md").write_text("Investigate TASK-999\n", encoding="utf-8")
         run(root, "check", expected=1)

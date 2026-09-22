@@ -6,8 +6,9 @@ from pathlib import Path
 import re
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
+from .config import LedgerConfig
 from .errors import LedgerError
 from .git import repository_root, safe_file
 
@@ -213,16 +214,21 @@ class EntityRegistry:
     def lookup(self, entity_id):
         return next((row for row in self.rows if row.id == entity_id or (entity_id and row.legacy == entity_id)), None)
 
-    def allocate(self, type_name, name="", status=None, parent="", anchor="", supersedes="", note="", legacy=""):
-        from .linter import check_registry_invariants
+    def _main_worktree_root(self, operation="allocate"):
         root = self.path.resolve()
         for _ in Path(self.config.registry_path).parts:
             root = root.parent
         repository_root(root)
-        # Linked worktrees and separate Git directories cannot mint in this release.
+        # Linked worktrees and separate Git directories cannot write in this release.
         if not (root / ".git").is_dir():
-            raise LedgerError("ERR_ALLOCATION_WORKTREE", "Allocate only in the authoritative main worktree")
+            action = "Allocate" if operation == "allocate" else "Update"
+            raise LedgerError("ERR_ALLOCATION_WORKTREE", f"{action} only in the authoritative main worktree")
         safe_file(root, self.config.registry_path)
+        return root
+
+    def allocate(self, type_name, name="", status=None, parent="", anchor="", supersedes="", note="", legacy=""):
+        from .linter import check_registry_invariants
+        root = self._main_worktree_root()
         state_path = root / ".git" / "repo-ledger-serials.json"
         with FileLock(root / ".git" / "repo-ledger-allocate.lock"):
             fresh = self.load(self.path, self.config)
@@ -269,3 +275,76 @@ class EntityRegistry:
             atomic_write(state_path, json.dumps(state, indent=2) + "\n")
             self.save()
             return row
+
+    def update(self, entity_id, *, status=None, note=None, expected_status=None):
+        """Update only mutable status and note fields under the allocation lock."""
+        from .linter import check_registry_invariants
+
+        if status is None and note is None:
+            raise LedgerError("ERR_NO_UPDATE", "Supply status and/or note to update", entity=entity_id)
+
+        root = self._main_worktree_root("update")
+        with FileLock(root / ".git" / "repo-ledger-allocate.lock"):
+            latest_config = LedgerConfig.load(root / "ledger.toml")
+            latest_path = safe_file(root, latest_config.registry_path)
+            if latest_path.resolve() != self.path.resolve():
+                raise LedgerError("ERR_REGISTRY_PATH_CHANGED",
+                                  "Registry path changed; reload the registry before updating",
+                                  f"{root / 'ledger.toml'}:1:1", entity=entity_id)
+
+            fresh = self.load(latest_path, latest_config)
+            row_index = next((index for index, row in enumerate(fresh.rows)
+                              if row.id == entity_id), None)
+            if row_index is None:
+                alias = next((row for row in fresh.rows if entity_id and row.legacy == entity_id), None)
+                if alias is not None:
+                    raise LedgerError("ERR_LEGACY_READONLY",
+                                      f"Legacy alias is read-only; use current ID {alias.id}",
+                                      f"{fresh.path}:{fresh.lines.get(alias.id, 1)}:1", entity=entity_id)
+                raise LedgerError("ERR_UNREGISTERED_ENTITY", "Entity not found",
+                                  f"{fresh.path}:1:1", entity=entity_id)
+
+            row = fresh.rows[row_index]
+            location = f"{fresh.path}:{fresh.lines.get(row.id, 1)}:1"
+            if expected_status is not None and row.status != expected_status:
+                raise LedgerError("ERR_UPDATE_CONFLICT",
+                                  f"Expected status {expected_status!r}, found {row.status!r}",
+                                  location, entity=row.id)
+
+            type_name = row.id.rsplit("-", 1)[0]
+            next_status = row.status if status is None else status
+            next_note = row.note if note is None else note
+            if status is not None and (not isinstance(status, str)
+                                       or status not in latest_config.types[type_name].allowed_statuses):
+                raise LedgerError("ERR_INVALID_STATUS", "Status is not in the type vocabulary",
+                                  location, entity=row.id)
+            if note is not None and not isinstance(note, str):
+                raise LedgerError("ERR_INVALID_FIELD", "note must be a string", location, row.id)
+            if note is not None:
+                try:
+                    encode(note)
+                except LedgerError as exc:
+                    exc.issue.location = location
+                    exc.issue.entity = row.id
+                    raise
+
+            candidate = replace(row, status=next_status, note=next_note)
+            try:
+                candidate.to_markdown_row()
+            except LedgerError as exc:
+                exc.issue.location = location
+                exc.issue.entity = row.id
+                raise
+            fresh.rows[row_index] = candidate
+            issues = check_registry_invariants(fresh, root)
+            if issues:
+                issue = issues[0]
+                raise LedgerError(issue.code, issue.reason, issue.location, issue.entity)
+
+            fresh.save()
+            self.path = fresh.path
+            self.config = fresh.config
+            self.rows = fresh.rows
+            self.lines = fresh.lines
+            self.preamble_lines = fresh.preamble_lines
+            return candidate
