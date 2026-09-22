@@ -63,6 +63,85 @@ def test_init_allocate_and_lookup_lifecycle(tmp_path: Path, monkeypatch, capsys)
     assert rc == 0
 
 
+def test_legacy_alias_lookup_returns_current_entity(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    doc_file = tmp_path / "proposal.md"
+    doc_file.write_text("# Proposal\n", encoding="utf-8")
+    track()
+    capsys.readouterr()
+
+    assert main(["allocate", "TASK", "Renamed task", "--anchor", "proposal.md",
+                 "--legacy", "OLD-TASK-7", "--json"]) == 0
+    row = json.loads(capsys.readouterr().out)
+    assert row["id"] == "TASK-1"
+    assert row["legacy"] == "OLD-TASK-7"
+    assert "legacy" in (tmp_path / ".ledger" / "ENTITY_REGISTRY.md").read_text(encoding="utf-8").splitlines()[3]
+
+    assert main(["lookup", "OLD-TASK-7", "--json"]) == 0
+    resolved = json.loads(capsys.readouterr().out)
+    assert resolved["id"] == "TASK-1"
+    assert resolved["legacy"] == "OLD-TASK-7"
+    assert main(["lookup", "", "--json"]) == 1
+    capsys.readouterr()
+
+    (tmp_path / "old-note.md").write_text("OLD-TASK-7\n", encoding="utf-8")
+    assert main(["check-legacy", "--json"]) == 1
+    guard = json.loads(capsys.readouterr().out)
+    assert guard["issues"][0]["entity"] == "TASK-1"
+
+
+def test_legacy_guard_is_literal_and_is_part_of_check(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    (tmp_path / "ledger.toml").write_text(
+        '[legacy_guard]\nforbidden_tokens = ["OLD-TASK-1"]\nscope_globs = ["*.md"]\n',
+        encoding="utf-8")
+    (tmp_path / "notes.md").write_text("OLD-TASK-1\nOLD-TASK-10\n", encoding="utf-8")
+    track()
+    capsys.readouterr()
+
+    assert main(["check-legacy", "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["issues"][0]["code"] == "ERR_RETIRED_CODE"
+    assert report["issues"][0]["location"] == "notes.md:1:1"
+    assert report["issues"][0]["entity"] == "OLD-TASK-1"
+
+    assert main(["check", "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert any(item["code"] == "ERR_RETIRED_CODE" for item in report["issues"])
+
+
+def test_legacy_guard_exemption_layers_are_audited(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init"]) == 0
+    (tmp_path / "ledger.toml").write_text(
+        """[legacy_guard]
+forbidden_tokens = ["OLD-TASK-1"]
+scope_globs = ["*.md"]
+exclude_globs = ["range.md"]
+file_exemptions = ["whole.md"]
+fence_exemptions = ["text"]
+column_masks = { "columns.md" = [2] }
+string_line_exemptions = { "lines.md" = [1] }
+""",
+        encoding="utf-8")
+    (tmp_path / "range.md").write_text("OLD-TASK-1\n", encoding="utf-8")
+    (tmp_path / "whole.md").write_text("OLD-TASK-1\n", encoding="utf-8")
+    (tmp_path / "fence.md").write_text("```text\nOLD-TASK-1\n```\n", encoding="utf-8")
+    (tmp_path / "columns.md").write_text("safe | OLD-TASK-1 | safe\n", encoding="utf-8")
+    (tmp_path / "lines.md").write_text("OLD-TASK-1\nOLD-TASK-1\n", encoding="utf-8")
+    track()
+
+    before = (tmp_path / "lines.md").read_bytes()
+    capsys.readouterr()
+    assert main(["check-legacy", "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert [item["location"] for item in report["issues"]] == ["lines.md:2:1"]
+    assert report["scope"]["legacy_guard"]["excluded"]
+    assert (tmp_path / "lines.md").read_bytes() == before
+
+
 def test_linter_catches_unregistered_reference_with_stable_code(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     main(["init"])

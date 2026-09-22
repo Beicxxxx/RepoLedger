@@ -5,10 +5,29 @@ import re
 import tomllib
 from .errors import LedgerError
 
+DEFAULT_GUARD_SCOPE = [
+    "*.py", "**/*.py", "*.ts", "**/*.ts", "*.js", "**/*.js",
+    "*.go", "**/*.go", "*.rs", "**/*.rs", "*.json", "**/*.json",
+    "*.md", "**/*.md",
+]
+
+
 def relative_path(value):
     return (isinstance(value, str) and bool(value) and "\\" not in value
             and ":" not in value and not PurePosixPath(value).is_absolute()
             and all(p not in ("", ".", "..", ".git") for p in value.split("/")))
+
+
+def _guard_glob(value):
+    """Accept repository-relative matching patterns, never arbitrary regex."""
+    return (isinstance(value, str) and bool(value) and "\\" not in value
+            and ":" not in value and not PurePosixPath(value).is_absolute()
+            and all(p not in ("", ".", "..", ".git") for p in value.split("/")))
+
+
+def _guard_token(value):
+    return (isinstance(value, str) and bool(value) and value == value.strip()
+            and not any(ord(c) < 32 or c in "\x7f\x85\u2028\u2029" for c in value))
 
 @dataclass
 class EntityTypeConfig:
@@ -17,6 +36,19 @@ class EntityTypeConfig:
     require_anchor: bool = True
     description: str = ""
 
+
+@dataclass
+class LegacyGuardConfig:
+    enabled: bool = True
+    scope_globs: list[str] = field(default_factory=lambda: list(DEFAULT_GUARD_SCOPE))
+    exclude_globs: list[str] = field(default_factory=list)
+    forbidden_tokens: list[str] = field(default_factory=list)
+    file_exemptions: list[str] = field(default_factory=list)
+    column_masks: dict[str, list[int]] = field(default_factory=dict)
+    fence_exemptions: list[str] = field(default_factory=list)
+    string_line_exemptions: dict[str, list[int]] = field(default_factory=dict)
+
+
 @dataclass
 class LedgerConfig:
     schema_version: str = "1.0"
@@ -24,6 +56,7 @@ class LedgerConfig:
     allow_gaps: bool = True
     code_extensions: list[str] = field(default_factory=lambda: [".py", ".ts", ".js", ".go", ".rs", ".json", ".md"])
     ignore_globs: list[str] = field(default_factory=list)
+    legacy_guard: LegacyGuardConfig = field(default_factory=LegacyGuardConfig)
     types: dict = field(default_factory=dict)
 
     @classmethod
@@ -42,7 +75,7 @@ class LedgerConfig:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
             fail(str(exc))
-        if set(data) - {"ledger", "types"}:
+        if set(data) - {"ledger", "types", "legacy_guard"}:
             fail("Unknown top-level configuration field")
         cfg = cls.default()
         section = data.get("ledger", {})
@@ -65,6 +98,38 @@ class LedgerConfig:
                 fail(f"{key} must be a string array")
         if not all(x.startswith(".") for x in cfg.code_extensions):
             fail("code_extensions entries must start with a dot")
+        guard_data = data.get("legacy_guard", {})
+        if not isinstance(guard_data, dict):
+            fail("legacy_guard must be a table")
+        allowed_guard = {"enabled", "scope_globs", "exclude_globs", "forbidden_tokens",
+                         "file_exemptions", "column_masks", "fence_exemptions",
+                         "string_line_exemptions"}
+        if set(guard_data) - allowed_guard:
+            fail("Unknown legacy_guard field")
+        guard = LegacyGuardConfig()
+        for key, value in guard_data.items():
+            setattr(guard, key, value)
+        if type(guard.enabled) is not bool:
+            fail("legacy_guard.enabled must be boolean")
+        for key in ("scope_globs", "exclude_globs", "file_exemptions"):
+            value = getattr(guard, key)
+            if not isinstance(value, list) or not all(_guard_glob(x) for x in value):
+                fail(f"legacy_guard.{key} must be a string array of safe globs")
+        if not isinstance(guard.forbidden_tokens, list) or not all(_guard_token(x) for x in guard.forbidden_tokens):
+            fail("legacy_guard.forbidden_tokens must be a string array of literal tokens")
+        if len(set(guard.forbidden_tokens)) != len(guard.forbidden_tokens):
+            fail("legacy_guard.forbidden_tokens must be distinct")
+        if not isinstance(guard.fence_exemptions, list) or not all(isinstance(x, str) for x in guard.fence_exemptions):
+            fail("legacy_guard.fence_exemptions must be a string array")
+        for key in ("column_masks", "string_line_exemptions"):
+            value = getattr(guard, key)
+            if not isinstance(value, dict) or not all(
+                _guard_glob(path) and isinstance(columns, list)
+                and all(type(number) is int and number > 0 for number in columns)
+                and len(set(columns)) == len(columns)
+                for path, columns in value.items()):
+                fail(f"legacy_guard.{key} must map safe globs to distinct positive integer arrays")
+        cfg.legacy_guard = guard
         if "types" in data:
             if not isinstance(data["types"], dict) or not data["types"]:
                 fail("types must be a nonempty table")

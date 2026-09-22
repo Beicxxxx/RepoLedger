@@ -6,7 +6,7 @@ import sys
 from .config import LedgerConfig, find_config_file
 from .errors import LedgerError
 from .git import repository_root, safe_file
-from .linter import aggregate, check_registry_invariants, scan
+from .linter import aggregate, check_registry_invariants, scan, scan_legacy
 from .registry import EntityRegistry
 
 DEFAULT_CONFIG_TEMPLATE = '''[ledger]
@@ -15,6 +15,16 @@ registry_path = ".ledger/ENTITY_REGISTRY.md"
 allow_gaps = true
 code_extensions = [".py", ".ts", ".js", ".go", ".rs", ".json", ".md"]
 ignore_globs = []
+
+[legacy_guard]
+enabled = true
+scope_globs = ["*.py", "**/*.py", "*.ts", "**/*.ts", "*.js", "**/*.js", "*.go", "**/*.go", "*.rs", "**/*.rs", "*.json", "**/*.json", "*.md", "**/*.md"]
+exclude_globs = []
+forbidden_tokens = []
+file_exemptions = []
+column_masks = {}
+fence_exemptions = []
+string_line_exemptions = {}
 '''
 
 def output(value):
@@ -23,14 +33,14 @@ def output(value):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="repo-ledger")
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("init", "allocate", "lookup", "check", "tree"):
+    for command in ("init", "allocate", "lookup", "check", "check-legacy", "tree"):
         p = commands.add_parser(command)
         p.add_argument("--root", type=Path)
         p.add_argument("--json", action="store_true")
         if command == "allocate":
             p.add_argument("type")
             p.add_argument("name")
-            for flag in ("anchor", "status", "parent", "supersedes", "note"):
+            for flag in ("anchor", "status", "parent", "supersedes", "note", "legacy"):
                 p.add_argument("--" + flag, default=None if flag == "status" else "")
         if command == "lookup":
             p.add_argument("entity_id")
@@ -58,8 +68,8 @@ def main(argv=None):
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("x", encoding="utf-8") as stream:
                 stream.write("<!-- schema: 1.0 -->\n# Entity Registry\n\n"
-                             "| id | name | status | parent | order | anchor | supersedes | date | note |\n"
-                             "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
+                             "| id | name | status | parent | order | anchor | supersedes | date | legacy | note |\n"
+                             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
             output({"status": "INITIALIZED", "root": str(root)})
             return 0
         if cfg_path is None:
@@ -68,7 +78,8 @@ def main(argv=None):
         cfg = LedgerConfig.load(cfg_path)
         registry = EntityRegistry.load(safe_file(root, cfg.registry_path), cfg)
         if args.command == "allocate":
-            row = registry.allocate(args.type, args.name, args.status, args.parent, args.anchor, args.supersedes, args.note)
+            row = registry.allocate(args.type, args.name, args.status, args.parent, args.anchor,
+                                    args.supersedes, args.note, args.legacy)
             output(row.to_dict())
         elif args.command == "lookup":
             row = registry.lookup(args.entity_id)
@@ -77,7 +88,8 @@ def main(argv=None):
             if args.json:
                 output(row.to_dict())
             else:
-                print(f"ID:         {row.id}\nName:       {row.name}\nStatus:     {row.status}\nAnchor:     {row.anchor}")
+                print(f"ID:         {row.id}\nName:       {row.name}\nStatus:     {row.status}\n"
+                      f"Anchor:     {row.anchor}\nLegacy:     {row.legacy}")
         elif args.command == "tree":
             # Retained prototype convenience; validation prevents cycles.
             issues = check_registry_invariants(registry, root)
@@ -86,10 +98,27 @@ def main(argv=None):
                 raise LedgerError(issue.code, issue.reason, issue.location, issue.entity)
             for row in registry.rows:
                 print(f"{row.id} [{row.status}] {row.name} parent={row.parent or '-'}")
+        elif args.command == "check-legacy":
+            legacy_issues, legacy_audit = scan_legacy(root, registry)
+            scope = {"view": "worktree", "legacy_guard": legacy_audit}
+            result = {"status": "FAIL" if legacy_issues else "PASS", "entities_count": len(registry.rows),
+                      "complete": not any(i.category == "incomplete" for i in legacy_issues),
+                      "scope": scope, "issues": aggregate(legacy_issues)}
+            if args.json:
+                output(result)
+            else:
+                print(f"{result['status']}: legacy guard, {len(legacy_audit['scanned'])} files scanned")
+                for issue in result["issues"]:
+                    print(f"[{issue['code']}] {issue['location']} {issue['entity']}: {issue['reason']} "
+                          f"(count={issue['count']}); {issue['suggestion']}")
+            return 3 if not result["complete"] else int(bool(legacy_issues))
         else:
             issues = check_registry_invariants(registry, root)
             scanned, audit = scan(root, registry)
             issues += scanned
+            legacy_issues, legacy_audit = scan_legacy(root, registry)
+            issues += legacy_issues
+            audit["legacy_guard"] = legacy_audit
             result = {"status": "FAIL" if issues else "PASS", "entities_count": len(registry.rows),
                       "complete": not any(i.category == "incomplete" for i in issues),
                       "scope": audit, "issues": aggregate(issues)}

@@ -11,7 +11,8 @@ from dataclasses import asdict, dataclass
 from .errors import LedgerError
 from .git import repository_root, safe_file
 
-TABLE_HEADER = ["id", "name", "status", "parent", "order", "anchor", "supersedes", "date", "note"]
+TABLE_HEADER = ["id", "name", "status", "parent", "order", "anchor", "supersedes", "date", "legacy", "note"]
+LEGACY_TABLE_HEADER = ["id", "name", "status", "parent", "order", "anchor", "supersedes", "date", "note"]
 RegistryError = LedgerError
 ID_RE = re.compile(r"([A-Z][A-Z_]*)-([1-9][0-9]*)")
 
@@ -20,7 +21,7 @@ def encode(value):
         raise LedgerError("ERR_INVALID_FIELD", "Fields cannot contain control characters or outer whitespace")
     return value.replace("\\", "\\\\").replace("|", "\\|")
 
-def _split_row_cells(line):
+def _split_row_cells(line, expected_columns=None):
     if not line.startswith("|") or not line.endswith("|"):
         raise LedgerError("ERR_ROW_FORMAT", "Expected a pipe-delimited row")
     cells, cell = [], []
@@ -38,8 +39,9 @@ def _split_row_cells(line):
         else:
             cell.append(char)
         i += 1
-    if cell or len(cells) != len(TABLE_HEADER):
-        raise LedgerError("ERR_COLUMN_COUNT", f"Expected 9 columns, got {len(cells)}")
+    if cell or (expected_columns is not None and len(cells) != expected_columns):
+        expected = expected_columns if expected_columns is not None else "a valid number of"
+        raise LedgerError("ERR_COLUMN_COUNT", f"Expected {expected} columns, got {len(cells)}")
     for value in cells:
         encode(value)
     return cells
@@ -55,12 +57,15 @@ class EntityRow:
     supersedes: str = ""
     date: str = ""
     note: str = ""
+    legacy: str = ""
 
     def to_dict(self):
         return asdict(self)
 
     def to_markdown_row(self):
-        return "| " + " | ".join(encode(v) for v in asdict(self).values()) + " |"
+        values = [self.id, self.name, self.status, self.parent, self.order,
+                  self.anchor, self.supersedes, self.date, self.legacy, self.note]
+        return "| " + " | ".join(encode(v) for v in values) + " |"
 
 def atomic_write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,6 +118,7 @@ class EntityRegistry:
         if not lines or lines[0] != "<!-- schema: 1.0 -->":
             raise LedgerError("ERR_SCHEMA", "First line must declare supported schema 1.0", f"{path}:1:1")
         header = None
+        table_header = None
         for n, line in enumerate(lines, 1):
             if re.match(r"^(<<<<<<<|=======|>>>>>>>|\|\|\|\|\|\|\|)", line):
                 raise LedgerError("ERR_MERGE_CONFLICT", "Unresolved conflict marker", f"{path}:{n}:1")
@@ -124,33 +130,46 @@ class EntityRegistry:
                 except LedgerError as exc:
                     exc.issue.location = f"{path}:{n}:1"
                     raise
-                if cells != TABLE_HEADER:
+                if cells not in (TABLE_HEADER, LEGACY_TABLE_HEADER):
                     raise LedgerError("ERR_HEADER", "Unexpected table header", f"{path}:{n}:1")
+                table_header = cells
                 header = n - 1
             elif header is None and n > 1 and line and not line.startswith(("# ", "> ")):
                 raise LedgerError("ERR_ROW_FORMAT", "Unexpected content before table", f"{path}:{n}:1")
         if header is None or header + 1 >= len(lines):
             raise LedgerError("ERR_HEADER", "Missing header/separator", f"{path}:1:1")
         try:
-            separator = _split_row_cells(lines[header + 1])
+            separator = _split_row_cells(lines[header + 1], len(table_header))
         except LedgerError as exc:
             exc.issue.location = f"{path}:{header+2}:1"
             raise
-        if separator != ["---"] * 9:
-            raise LedgerError("ERR_HEADER", "Expected nine --- separator cells", f"{path}:{header+2}:1")
+        if separator != ["---"] * len(table_header):
+            raise LedgerError("ERR_HEADER", f"Expected {len(table_header)} --- separator cells", f"{path}:{header+2}:1")
         reg.preamble_lines = lines[:header]
-        seen, serials = set(), {}
+        seen, seen_legacy, serials = set(), set(), {}
         for n in range(header + 2, len(lines)):
             if not lines[n].strip():
                 continue
             row = None
             try:
-                row = EntityRow(*_split_row_cells(lines[n]))
+                cells = _split_row_cells(lines[n], len(table_header))
+                if table_header == LEGACY_TABLE_HEADER:
+                    cells.append("")
+                else:
+                    # Preserve the old field positions and insert legacy before note.
+                    cells = cells[:8] + [cells[9], cells[8]]
+                row = EntityRow(*cells)
                 match = ID_RE.fullmatch(row.id)
                 if not match or match[1] not in config.types:
                     raise LedgerError("ERR_INVALID_ID_FORMAT", "Unknown type or noncanonical ID")
                 if row.id in seen:
                     raise LedgerError("ERR_DUPLICATE_ID", "Duplicate entity")
+                if row.id in seen_legacy:
+                    raise LedgerError("ERR_LEGACY_COLLISION", "A current ID cannot also be a legacy alias")
+                if row.legacy and row.legacy in seen_legacy:
+                    raise LedgerError("ERR_DUPLICATE_LEGACY", "A legacy alias must identify at most one entity")
+                if row.legacy and (row.legacy in seen or row.legacy == row.id):
+                    raise LedgerError("ERR_LEGACY_COLLISION", "A legacy alias cannot also be a current ID")
                 typ, serial = match[1], int(match[2])
                 if serial <= serials.get(typ, 0):
                     raise LedgerError("ERR_SERIAL_ORDER", "Rows must increase per type")
@@ -173,6 +192,8 @@ class EntityRegistry:
                 if config.types[typ].require_anchor and not row.anchor:
                     raise LedgerError("ERR_MISSING_ANCHOR", "anchor is required")
                 seen.add(row.id)
+                if row.legacy:
+                    seen_legacy.add(row.legacy)
                 serials[typ] = serial
                 reg.rows.append(row)
                 reg.lines[row.id] = n + 1
@@ -185,14 +206,14 @@ class EntityRegistry:
     def save(self):
         text = "\n".join(self.preamble_lines + [
             "| " + " | ".join(TABLE_HEADER) + " |",
-            "| " + " | ".join(["---"] * 9) + " |",
+            "| " + " | ".join(["---"] * len(TABLE_HEADER)) + " |",
             *(row.to_markdown_row() for row in self.rows), ""])
         atomic_write(self.path, text)
 
     def lookup(self, entity_id):
-        return next((row for row in self.rows if row.id == entity_id), None)
+        return next((row for row in self.rows if row.id == entity_id or (entity_id and row.legacy == entity_id)), None)
 
-    def allocate(self, type_name, name="", status=None, parent="", anchor="", supersedes="", note=""):
+    def allocate(self, type_name, name="", status=None, parent="", anchor="", supersedes="", note="", legacy=""):
         from .linter import check_registry_invariants
         root = self.path.resolve()
         for _ in Path(self.config.registry_path).parts:
@@ -224,11 +245,17 @@ class EntityRegistry:
                 state[typ] = max(state.get(typ, 0), int(number))
             serial = state.get(type_name, 0) + 1
             row = EntityRow(f"{type_name}-{serial}", name, status or self.config.types[type_name].allowed_statuses[0],
-                            parent, str(serial), anchor, supersedes, datetime.date.today().isoformat(), note)
+                            parent, str(serial), anchor, supersedes, datetime.date.today().isoformat(), note, legacy)
             # Validate the exact serialized candidate before either durable write.
             row.to_markdown_row()
             if not name or row.status not in self.config.types[type_name].allowed_statuses:
                 raise LedgerError("ERR_INVALID_STATUS" if name else "ERR_INVALID_FIELD", "Supply a name and legal status", entity=row.id)
+            if legacy and any(existing.legacy == legacy for existing in self.rows):
+                raise LedgerError("ERR_DUPLICATE_LEGACY", "A legacy alias must identify at most one entity", entity=row.id)
+            if legacy and any(existing.id == legacy for existing in self.rows):
+                raise LedgerError("ERR_LEGACY_COLLISION", "A legacy alias cannot also be a current ID", entity=row.id)
+            if any(existing.legacy == row.id for existing in self.rows):
+                raise LedgerError("ERR_LEGACY_COLLISION", "A current ID cannot also be a legacy alias", entity=row.id)
             if parent and not ID_RE.fullmatch(parent):
                 raise LedgerError("ERR_INVALID_RELATION", "parent must be one ID", entity=row.id)
             targets = [s.strip() for s in supersedes.split(",")] if supersedes else []

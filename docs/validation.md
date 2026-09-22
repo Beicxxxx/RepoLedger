@@ -1,6 +1,6 @@
 # 首轮验证记录
 
-日期：2026-09-21。环境：Windows，Python 3.14.5，pytest 9.1.1。
+日期：2026-09-22。环境：Windows，Python 3.14.5，pytest 9.1.1。
 Python 3.11 是声明的最低版本，本次未执行 3.11 或 Linux/macOS 矩阵。
 
 ## 实际执行
@@ -11,16 +11,17 @@ Python 3.11 是声明的最低版本，本次未执行 3.11 或 Linux/macOS 矩�
 python -m pytest -v -p no:cacheprovider --basetemp .test-runs/final
 ```
 
-结果：60 passed in 20.20s，无跳过。该时间为测试套件耗时，不是 CLI 性能基准。
+本轮命令 `python -m pytest -v`：66 passed，无跳过。该时间为测试套件耗时，不是 CLI 性能基准。
 重跑时使用新的 basetemp 子目录，避免 pytest 清理已有目录。
 
 覆盖 schema 缺失/未知版本、中文/竖线/连续反斜杠/空字段往返、非法控制字符、错列、重号、无法解析记录、合并冲突、未知引用、非法状态、无效锚点、自引用与关系环、六个独立进程竞争分配、锁超时、账本回退与写入中断后的编号保留、定制类型、只读扫描、聚合诊断、UTF-8 失败与受控文件删除。
 还验证 linked worktree 拒绝铸号，以及 index 与工作树不同时工作树模式仍读取工作树；暂存区模式明确拒绝，不能将此测试解释为已实现 index 校验。
+新增验证 legacy 列与旧 9 列读取兼容、legacy 唯一性、按 legacy lookup 当前 ID、枚举字面量退役代号守卫、守卫接入聚合 check，以及范围/整文件/围栏/列掩码/定向行五层豁免。
 
 执行 python examples/demo.py，实际完成：初始化 schema 账本 → 分配带受控文件 anchor 的实体 → 单实体 JSON 查询 → check 通过 → 添加 TASK-999 引用 → ERR_UNREGISTERED_ENTITY，定位 next.md:1:13。
 示例在临时 Git 仓库运行，未初始化或更改本项目自身账本。
 
-python -m repo_ledger --help、pyproject.toml 解析及 git diff --check 通过。AGENTS.md 为 34 行。
+python -m repo_ledger --help、pyproject.toml 解析及 git diff --check 通过。AGENTS.md 保持在 65 行以内。
 
 ## 尚未验证
 

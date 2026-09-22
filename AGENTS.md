@@ -15,11 +15,16 @@ Canonical instructions for all coding harnesses. Keep this file <= 65 lines.
 
 ## Invariants
 - TYPE-N: uppercase type, no zero padding, per-type monotonic, append-only.
+- legacy is an immutable historical alias: non-empty values are unique; decode old references to the current ID.
 - Gaps are allowed by default; never recycle or renumber issued entities.
+- Drafts, task briefs and reviews do not mint IDs; allocate only when the landing change can carry the row and ID together.
 - Require a physical anchor by default; proposals are valid evidence carriers.
 - anchor means evidence, not assignee; existence does not prove completion.
 - Strict schema/table parsing; never skip corrupt records.
 - check is read-only and must not auto-register unknown references.
+- Retired-code checks use enumerated literal tokens, declared scope and narrow exemptions; the guard must be aggregated by check.
+- The allocation lock protects one write, not uniqueness across clones; duplicate IDs must remain a visible check failure.
+- The only spelling equivalence is TYPE_N in code/JSON versus TYPE-N in prose; consumers must not silently invent variants.
 - Stable diagnostic codes with locations and actionable next steps.
 - Worktree, index and commit-tree are different views; reject unsupported views.
 - Allocation only in the authoritative main worktree under its short lock.

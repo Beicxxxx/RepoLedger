@@ -99,8 +99,142 @@ def scan(root, registry):
                                         "Lookup existing entities; fix a typo or explicitly allocate a genuinely new entity."))
     return issues, audit
 
+
+def _matches_glob(rel, pattern):
+    """Make the common ``**/name`` spelling include repository-root files."""
+    return fnmatch.fnmatchcase(rel, pattern) or (
+        pattern.startswith("**/") and fnmatch.fnmatchcase(rel, pattern[3:]))
+
+
+def _matches_any(rel, patterns):
+    return any(_matches_glob(rel, pattern) for pattern in patterns)
+
+
+def _masked_by_columns(line, start, end, rel, masks):
+    selected = {number for pattern, numbers in masks.items()
+                if _matches_glob(rel, pattern) for number in numbers}
+    if not selected:
+        return False
+    delimiter = "|" if "|" in line else "\t" if "\t" in line else "," if "," in line else None
+    if delimiter is None:
+        return False
+    spans = []
+    cursor = 0
+    for match in re.finditer(re.escape(delimiter), line):
+        spans.append((cursor, match.start()))
+        cursor = match.end()
+    spans.append((cursor, len(line)))
+    if delimiter == "|" and line.startswith("|"):
+        spans = spans[1:]
+    if delimiter == "|" and line.endswith("|"):
+        spans = spans[:-1]
+    return any(index in selected and start >= left and end <= right
+               for index, (left, right) in enumerate(spans, 1))
+
+
+def _fence_start(line):
+    match = re.match(r"^\s*(`{3,}|~{3,})\s*([^\s`~]*)", line)
+    return (match.group(1)[0], match.group(2)) if match else None
+
+
+def scan_legacy(root, registry):
+    """Reject explicitly enumerated retired aliases in a declared text scope.
+
+    The regular expression is generated only from escaped, configured literal
+    tokens and registry legacy values.  Users cannot supply a shape regex.
+    """
+    tracked, new, git_ignored = inventory(root)
+    cfg = registry.config
+    guard = cfg.legacy_guard
+    effective_scope = guard.scope_globs or [
+        pattern
+        for extension in sorted(set(cfg.code_extensions) | {".md"})
+        for pattern in (f"*{extension}", f"**/*{extension}")
+    ]
+    audit = {
+        "enabled": guard.enabled,
+        "scope_globs": effective_scope,
+        "exclude_globs": list(guard.exclude_globs),
+        "file_exemptions": list(guard.file_exemptions),
+        "column_masks": dict(guard.column_masks),
+        "fence_exemptions": list(guard.fence_exemptions),
+        "string_line_exemptions": dict(guard.string_line_exemptions),
+        "tracked": sorted(tracked),
+        "untracked": sorted(new),
+        "git_ignored": git_ignored,
+        "scanned": [],
+        "excluded": [],
+        "blind_spots": [
+            "JSON object keys are not structurally audited; this is a line-oriented guard, "
+            "not proof that generated or escaped key names are covered."
+        ],
+    }
+    if not guard.enabled:
+        audit["excluded"].append({"file": "<guard>", "reason": "legacy guard disabled by configuration"})
+        return [], audit
+
+    legacy_to_id = {row.legacy: row.id for row in registry.rows if row.legacy}
+    tokens = sorted(set(guard.forbidden_tokens) | set(legacy_to_id), key=lambda value: (-len(value), value))
+    audit["tokens"] = tokens
+    if not tokens:
+        return [], audit
+    pattern = re.compile(r"(?<![\w-])(?:" + "|".join(re.escape(token) for token in tokens) + r")(?![\w-])")
+    issues = []
+    for rel in sorted(tracked | new):
+        reason = None
+        if rel == cfg.registry_path:
+            reason = "authoritative registry parsed separately"
+        elif any(fnmatch.fnmatchcase(rel, pattern) for pattern in cfg.ignore_globs):
+            reason = "configured ledger ignore"
+        elif _matches_any(rel, guard.exclude_globs):
+            reason = "legacy guard range exclusion"
+        elif not _matches_any(rel, effective_scope):
+            reason = "outside declared legacy guard scope"
+        elif _matches_any(rel, guard.file_exemptions):
+            reason = "legacy guard whole-file exemption"
+        if reason:
+            audit["excluded"].append({"file": rel, "reason": reason})
+            continue
+        try:
+            content = safe_file(root, rel).read_text(encoding="utf-8")
+            audit["scanned"].append(rel)
+        except (OSError, UnicodeError, LedgerError) as exc:
+            issues.append(Issue("ERR_SCAN_INCOMPLETE", f"{rel}:1:1", "", str(exc),
+                                "Restore a readable UTF-8 regular file in the repository.", "incomplete"))
+            continue
+
+        fence = None
+        line_patterns = [(pattern, numbers) for pattern, numbers in guard.string_line_exemptions.items()
+                         if _matches_glob(rel, pattern)]
+        for number, line in enumerate(content.splitlines(), 1):
+            marker = _fence_start(line)
+            if fence:
+                if marker and marker[0] == fence[0]:
+                    fence = None
+                elif fence[1] in guard.fence_exemptions:
+                    continue
+            elif marker:
+                if marker[1] in guard.fence_exemptions:
+                    fence = marker
+                    continue
+            if any(number in numbers for _, numbers in line_patterns):
+                continue
+            for match in pattern.finditer(line):
+                if _masked_by_columns(line, match.start(), match.end(), rel, guard.column_masks):
+                    continue
+                token = match[0]
+                entity = legacy_to_id.get(token, token)
+                issues.append(Issue(
+                    "ERR_RETIRED_CODE", f"{rel}:{number}:{match.start() + 1}", entity,
+                    f"Retired alias appears in the declared scan scope: {token}",
+                    "Decode the alias with repo-ledger lookup and write the current ID; add only a narrow, documented exemption if this is teaching data."
+                ))
+    return issues, audit
+
+
 def lint_all(root, registry):
-    return check_registry_invariants(registry, root) + scan(root, registry)[0]
+    return (check_registry_invariants(registry, root) + scan(root, registry)[0]
+            + scan_legacy(root, registry)[0])
 
 def aggregate(issues):
     groups = {}

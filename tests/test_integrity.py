@@ -137,6 +137,54 @@ def test_failed_registry_write_reserves_number(repo, monkeypatch):
     assert registry(repo).allocate("TASK", "Retry", anchor="proposal.md").id == "TASK-2"
 
 
+def test_duplicate_legacy_alias_is_rejected(repo):
+    reg = registry(repo)
+    reg.allocate("TASK", "One", anchor="proposal.md", legacy="OLD-1")
+    with pytest.raises(LedgerError) as error:
+        reg.allocate("TASK", "Two", anchor="proposal.md", legacy="OLD-1")
+    assert error.value.issue.code == "ERR_DUPLICATE_LEGACY"
+
+    reg.allocate("TASK", "Two", anchor="proposal.md")
+    reg.rows[1].legacy = "OLD-1"
+    reg.save()
+    with pytest.raises(LedgerError) as error:
+        registry(repo)
+    assert error.value.issue.code == "ERR_DUPLICATE_LEGACY"
+
+
+def test_nine_column_registry_is_readable_and_upgraded(repo):
+    path = repo / ".ledger" / "ENTITY_REGISTRY.md"
+    path.write_text(
+        """<!-- schema: 1.0 -->
+# Entity Registry
+
+| id | name | status | parent | order | anchor | supersedes | date | note |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| TASK-1 | Old format | BACKLOG |  | 1 | proposal.md |  | 2026-09-22 | preserved |
+""",
+        encoding="utf-8")
+    loaded = registry(repo)
+    assert loaded.lookup("TASK-1").legacy == ""
+    assert loaded.lookup("TASK-1").note == "preserved"
+    loaded.save()
+    text = path.read_text(encoding="utf-8")
+    assert "| id | name | status | parent | order | anchor | supersedes | date | legacy | note |" in text
+    assert "| TASK-1 | Old format | BACKLOG |  | 1 | proposal.md |  | 2026-09-22 |  | preserved |" in text
+
+
+def test_legacy_alias_cannot_collide_with_current_id(repo):
+    reg = registry(repo)
+    reg.allocate("TASK", "One", anchor="proposal.md")
+    with pytest.raises(LedgerError) as error:
+        reg.allocate("ISSUE", "Alias collision", anchor="proposal.md", legacy="TASK-1")
+    assert error.value.issue.code == "ERR_LEGACY_COLLISION"
+
+    reg.allocate("TASK", "Reserved future alias", anchor="proposal.md", legacy="TASK-3")
+    with pytest.raises(LedgerError) as error:
+        reg.allocate("TASK", "Future current ID", anchor="proposal.md")
+    assert error.value.issue.code == "ERR_LEGACY_COLLISION"
+
+
 def test_worktree_content_is_distinct_from_index(repo, capsys):
     (repo / "proposal.md").write_text("TASK-90\n", encoding="utf-8")
     subprocess.run(["git", "add", "proposal.md"], check=True, capture_output=True)
