@@ -57,6 +57,13 @@ class LegacyGuardConfig:
 
 
 @dataclass
+class IndexConfig:
+    """Optional [index] table: where repo-ledger index writes pages and whether check verifies them."""
+    out_dir: str = ""
+    check: bool = False
+
+
+@dataclass
 class LedgerConfig:
     schema_version: str = "1.0"
     registry_path: str = ".ledger/ENTITY_REGISTRY.md"
@@ -67,6 +74,7 @@ class LedgerConfig:
     ignore_globs: list[str] = field(default_factory=list)
     reference_exemptions: dict[str, list[str]] = field(default_factory=dict)
     legacy_guard: LegacyGuardConfig = field(default_factory=LegacyGuardConfig)
+    index: IndexConfig = field(default_factory=IndexConfig)
     types: dict = field(default_factory=dict)
 
     @classmethod
@@ -85,7 +93,7 @@ class LedgerConfig:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
             fail(str(exc))
-        if set(data) - {"ledger", "types", "legacy_guard", "reference_exemptions"}:
+        if set(data) - {"ledger", "types", "legacy_guard", "reference_exemptions", "index"}:
             fail("Unknown top-level configuration field")
         cfg = cls.default()
         section = data.get("ledger", {})
@@ -151,6 +159,19 @@ class LedgerConfig:
             for path, tokens in exemptions.items()):
             fail("reference_exemptions must map safe file globs to distinct TYPE-N literal tokens")
         cfg.reference_exemptions = {path: list(tokens) for path, tokens in exemptions.items()}
+        index_data = data.get("index", {})
+        if not isinstance(index_data, dict):
+            fail("index must be a table")
+        if set(index_data) - {"out_dir", "check"}:
+            fail("index has an unknown field; only out_dir and check are supported")
+        index = IndexConfig(index_data.get("out_dir", ""), index_data.get("check", False))
+        if "out_dir" in index_data and not relative_path(index.out_dir):
+            fail("index.out_dir must be a safe repository-relative directory without a trailing slash")
+        if type(index.check) is not bool:
+            fail("index.check must be boolean")
+        if index.check and not index.out_dir:
+            fail("index.check = true requires index.out_dir")
+        cfg.index = index
         if "types" in data:
             if not isinstance(data["types"], dict) or not data["types"]:
                 fail("types must be a nonempty table")
