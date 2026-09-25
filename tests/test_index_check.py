@@ -305,3 +305,57 @@ def test_symlinked_page_is_not_trusted(tmp_path, capsys):
                                       ("ERR_SCAN_INCOMPLETE", f"{task}:1:1")])
     assert sorted(issue.code for issue in lint_all(root, load_registry(root))) == [
         "ERR_INDEX_STALE", "ERR_SCAN_INCOMPLETE", "ERR_SCAN_INCOMPLETE"]
+
+
+# check-legacy runs the same comparison as check and excludes only the verified pages.
+def test_check_legacy_scans_a_tampered_page(tmp_path, capsys):
+    root = make_repo(tmp_path, CHECKED, guard='forbidden_tokens = ["oldcode7"]\n')
+    generate(capsys, root)
+    page = root / "docs" / "index" / "TASK.md"
+    page.write_text(page.read_text(encoding="utf-8") + TAMPERED, encoding="utf-8")
+
+    code, report = run(capsys, root, "check-legacy")
+    assert code == 1 and report["status"] == "FAIL"
+    task = "docs/index/TASK.md"
+    assert located(report) == sorted([("ERR_RETIRED_CODE", position(root, task, "OLD-TASK-1", 0)),
+                                      ("ERR_RETIRED_CODE", position(root, task, "OLD-TASK-1", 1)),
+                                      ("ERR_RETIRED_CODE", position(root, task, "oldcode7"))])
+    guard = report["scope"]["legacy_guard"]
+    assert task in guard["scanned"] and task not in reasons(guard["excluded"])
+    for untouched in ("docs/index/README.md", "docs/index/ISSUE.md"):
+        assert reasons(guard["excluded"])[untouched] == VERIFIED
+
+
+def test_check_legacy_scans_a_hand_written_page(tmp_path, capsys):
+    root = make_repo(tmp_path, CHECKED)
+    generate(capsys, root)
+    (root / "docs" / "index" / "ISSUE.md").write_text("Hand-written: OLD-TASK-1\n", encoding="utf-8")
+
+    code, report = run(capsys, root, "check-legacy")
+    assert code == 1 and report["status"] == "FAIL"
+    assert located(report) == [("ERR_RETIRED_CODE", position(root, "docs/index/ISSUE.md", "OLD-TASK-1"))]
+
+
+def test_check_legacy_scans_pages_that_cannot_be_regenerated(tmp_path, capsys):
+    root = make_repo(tmp_path, CHECKED)
+    generate(capsys, root)
+    registry = root / ".ledger" / "ENTITY_REGISTRY.md"
+    registry.write_text(registry.read_text(encoding="utf-8").replace("| OPEN | TASK-1 |", "| OPEN | TASK-9 |"),
+                        encoding="utf-8")
+
+    code, report = run(capsys, root, "check-legacy")
+    assert code == 1 and report["status"] == "FAIL"
+    assert located(report) == [("ERR_RETIRED_CODE", position(root, "docs/index/TASK.md", "OLD-TASK-1"))]
+    guard = report["scope"]["legacy_guard"]
+    assert all(page in guard["scanned"] for page in PAGES)
+    assert VERIFIED not in reasons(guard["excluded"]).values()
+
+
+def test_check_legacy_scans_pages_when_the_index_check_is_off(tmp_path, capsys):
+    root = make_repo(tmp_path, 'out_dir = "docs/index"\n')
+    generate(capsys, root)
+
+    code, report = run(capsys, root, "check-legacy")
+    assert code == 1
+    assert located(report) == [("ERR_RETIRED_CODE", position(root, "docs/index/TASK.md", "OLD-TASK-1"))]
+    assert VERIFIED not in reasons(report["scope"]["legacy_guard"]["excluded"]).values()

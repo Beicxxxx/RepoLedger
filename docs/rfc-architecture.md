@@ -111,7 +111,7 @@ JSON scope 给出 tracked、untracked、git_ignored、ignore_globs、scanned、e
 
 `--check`：在内存中重新生成并与磁盘逐字节比较，报告 missing（页面不存在）、stale（字节不同）和 extra（输出目录顶层中生成器不会写的 `.md` 文件；子目录和其他扩展名忽略）。有任一差异时退出码为 1，且不写任何文件。账本任何字节变化都会使全部页面过期，因为每页首行都带指纹。指纹按原始字节计算，跨平台换行转换会改变它，账本与输出目录宜在 `.gitattributes` 中设为 `-text` 或 `eol=lf`。
 
-check 集成：`[index]` 同时声明 `out_dir` 与 `check = true` 时，`repo-ledger check` 以只读方式运行同一比较，每处差异报 ERR_INDEX_STALE，位置为 `<out_dir>/<页面>:1:1`；JSON 只新增 `scope.index`（out_dir、registry_sha256、pages、missing、stale、extra），已有字段不变。只有与再生成结果逐字节一致的页面才按精确路径从引用扫描与退役代号守卫中排除，原因写入 excluded：这些页面的内容就是账本内容，已由逐字节再生成校验，正如账本本身单独解析而不作为正文扫描。缺失或过期的页面（手改、手写的文件或符号链接）不排除，按普通文件扫描，其上的命中与 ERR_INDEX_STALE 一起报告，重新生成后随之消失；符号链接不被跟随，报扫描不完整。目录中的其他文件照常扫描。`check-legacy` 与 `lint_all` 使用同一排除范围。无法重新生成时报 ERR_INDEX_UNVERIFIED，类别为 incomplete（退出码 3），不会判为通过；此时没有页面被排除，已有页面按普通文件扫描。未声明 `[index]`，或 `check` 为 false 时，check 的行为与输出和以前完全相同，生成页按普通文件扫描。
+check 集成：`[index]` 同时声明 `out_dir` 与 `check = true` 时，`repo-ledger check` 以只读方式运行同一比较，每处差异报 ERR_INDEX_STALE，位置为 `<out_dir>/<页面>:1:1`；JSON 只新增 `scope.index`（out_dir、registry_sha256、pages、missing、stale、extra），已有字段不变。只有与再生成结果逐字节一致的页面才按精确路径从引用扫描与退役代号守卫中排除，原因写入 excluded：这些页面的内容就是账本内容，已由逐字节再生成校验，正如账本本身单独解析而不作为正文扫描。缺失或过期的页面（手改、手写的文件或符号链接）不排除，按普通文件扫描，其上的命中与 ERR_INDEX_STALE 一起报告，重新生成后随之消失；符号链接不被跟随，报扫描不完整。目录中的其他文件照常扫描。`check-legacy` 在 `check = true` 时先运行同一比较，与 `lint_all` 使用同一排除范围，只跳过逐字节一致的页面；比较只决定排除范围，差异本身仍由 check 报告。无法重新生成时报 ERR_INDEX_UNVERIFIED，类别为 incomplete（退出码 3），不会判为通过；此时没有页面被排除，已有页面按普通文件扫描。未声明 `[index]`，或 `check` 为 false 时，check 的行为与输出和以前完全相同，生成页按普通文件扫描。
 
 ## 查询、缓存与更新
 

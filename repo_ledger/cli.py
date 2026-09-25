@@ -6,7 +6,7 @@ import sys
 from .config import LedgerConfig, find_config_file
 from .errors import LedgerError
 from .git import repository_root, safe_file
-from .index import (build_index, compare_index, display_path, generated_pages, resolve_out_dir,
+from .index import (build_index, compare_index, display_path, resolve_out_dir,
                     verify_configured_index, write_index)
 from .linter import aggregate, check_registry_invariants, scan, scan_legacy
 from .registry import EntityRegistry
@@ -192,8 +192,8 @@ def main(argv=None):
             for top in sorted(grouped.get("", []), key=order_key):
                 render(top, 0)
         elif args.command == "check-legacy":
-            # Same scope as the guard inside check: verified generated pages are not prose.
-            generated = generated_pages(cfg) if cfg.index.check else frozenset()
+            # Same scope as the guard inside check: only pages that verified byte-identical are skipped.
+            generated = verify_configured_index(root, cfg)[2] if cfg.index.check else frozenset()
             legacy_issues, legacy_audit = scan_legacy(root, registry, generated)
             scope = {"view": "worktree", "legacy_guard": legacy_audit}
             result = {"status": "FAIL" if legacy_issues else "PASS", "entities_count": len(registry.rows),
