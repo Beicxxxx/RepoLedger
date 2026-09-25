@@ -215,6 +215,13 @@ class _Renderer:
     def sibling_key(row):
         return int(row.order), _serial(row.id)
 
+    def top_key(self, row):
+        # order is a position within one (type, parent) scope and is never compared across
+        # scopes: entities without a parent come first, then the children of each other-type
+        # parent as a group (parent type in declaration order, then parent serial).
+        scope = (1, self.type_order[_type(row.parent)], _serial(row.parent)) if row.parent else (0, 0, 0)
+        return (*scope, *self.sibling_key(row))
+
     def typed_sibling_key(self, row):
         return (self.type_order[_type(row.id)], *self.sibling_key(row))
 
@@ -287,7 +294,7 @@ class _Renderer:
 
     def tree(self, type_name, rows):
         top = [row for row in rows if not row.parent or _type(row.parent) != type_name]
-        stack = [(row, 0) for row in reversed(sorted(top, key=self.sibling_key))]
+        stack = [(row, 0) for row in reversed(sorted(top, key=self.top_key))]
         blocks, bullets, rendered = [], [], 0
         while stack:
             row, depth = stack.pop()

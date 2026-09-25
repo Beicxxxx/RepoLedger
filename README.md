@@ -128,7 +128,7 @@ repo-ledger check --json
 `index` 为每个已声明类型写一页 `<TYPE>.md`（没有实体的类型也写，并注明为空），另写总览 `README.md`：每个类型一行，列出 ledger.toml 中的 `description`、实体数、按状态计数和页面链接。每页首行是 HTML 注释，记录账本路径和账本文件字节 sha256 的前 12 位，并注明由 `repo-ledger index` 生成、不要手改。这里的 index 指生成的目录页，与 Git 暂存区（index 视图）无关。
 
 - 父子关系用标题层级表达：顶层实体（无 parent，或 parent 属于其他类型）为 `##`，子实体为 `###`，依次到 `######`；更深的实体在第六级标题下改为嵌套列表，顺序不变。
-- 同级先按 `order`（计划位置）再按 ID 数字排序；未开启 `independent_order` 时 order 等于序号，即按 ID 数字排序。计划位置并列时同样按 ID 数字排序。
+- 同级先按 `order`（计划位置）再按 ID 数字排序；未开启 `independent_order` 时 order 等于序号，即按 ID 数字排序。计划位置并列时同样按 ID 数字排序。order 只在同一 parent 下比较：顶层先列无 parent 的实体，再列 parent 属于其他类型的实体，按父实体分组（父实体的类型按 ledger.toml 声明顺序，同类型按 ID 数字），组内同样先按 order 再按 ID 数字。
 - 标题为“ID + 完整登记名称”。标题下一行是紧凑字段：status、date、anchor（owner 布局显示为 owner；路径渲染为从页面出发的相对链接，提交哈希只显示为不带链接的代码文本）、legacy（行内代码）、supersedes 与 superseded by（两个方向都写“ID + 名称”）、note。
 - parent 属于其他类型的实体列在自己类型页的顶层，并带 `parent:` 字段；父实体所在的页面在该父实体下写一行 `children of other types:`。
 - 页面中每处 ID 后都紧跟完整登记名称：note 与类型 `description` 中出现的已登记 ID 若后面没有名称，生成时补上；未登记的 token 原样保留，登记名称本身逐字输出。

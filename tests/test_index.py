@@ -169,8 +169,9 @@ def test_cross_type_parent_is_shown_on_both_pages(tmp_path, capsys):
     out = generate(capsys, make_project(tmp_path / "p", rows))
     issues, tasks = text(out / "ISSUE.md"), text(out / "TASK.md")
 
-    assert entity_headings(issues) == ["## ISSUE-1 Child issue", "### ISSUE-3 Nested issue",
-                                       "## ISSUE-2 Plain issue"]
+    # Entities without a parent come first, then the children of other types grouped by parent.
+    assert entity_headings(issues) == ["## ISSUE-2 Plain issue", "## ISSUE-1 Child issue",
+                                       "### ISSUE-3 Nested issue"]
     assert fields_of(issues, "ISSUE-1").endswith(DOT + "parent: TASK-1 Parent task")
     assert "parent:" not in fields_of(issues, "ISSUE-3")
 
@@ -205,6 +206,26 @@ def test_plan_order_sorts_siblings_before_numeric_id(tmp_path, capsys):
     assert entity_headings(page) == [
         "## TASK-2 Planned first", "### TASK-5 Child planned first", "### TASK-4 Child planned second",
         "## TASK-3 Tied first", "## TASK-1 Planned third"]
+
+
+def test_top_level_order_is_never_compared_across_parent_scopes(tmp_path, capsys):
+    rows = [row("TASK-1", "Root plan second", order=2), row("TASK-2", "Root plan first", order=1),
+            row("TASK-3", "Under issue one", parent="ISSUE-1", order=1),
+            row("TASK-4", "Under model one, planned second", parent="MODEL-1", order=2),
+            row("TASK-5", "Under model one, planned first", parent="MODEL-1", order=1),
+            row("TASK-6", "Under issue two", parent="ISSUE-2", order=1),
+            row("TASK-7", "Child of a root", parent="TASK-2", order=1),
+            row("ISSUE-1", "Issue one"), row("ISSUE-2", "Issue two"), row("MODEL-1", "Model one")]
+    root = make_project(tmp_path / "p", rows, independent_order=True)
+    page = text(generate(capsys, root) / "TASK.md")
+
+    # order is a plan position within one parent scope: entities without a parent come first,
+    # then each other-type parent's children as a group (parent type in declaration order, then
+    # parent serial), each group in (order, serial) order.
+    assert entity_headings(page) == [
+        "## TASK-2 Root plan first", "### TASK-7 Child of a root", "## TASK-1 Root plan second",
+        "## TASK-3 Under issue one", "## TASK-6 Under issue two",
+        "## TASK-5 Under model one, planned first", "## TASK-4 Under model one, planned second"]
 
 
 def test_without_independent_order_siblings_sort_by_numeric_id(tmp_path, capsys):

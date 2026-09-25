@@ -100,7 +100,7 @@ JSON scope 给出 tracked、untracked、git_ignored、ignore_globs、scanned、e
 
 1. 总览：表上一行给出账本路径、指纹、实体总数与类型数；表中每个类型一行，含 `description`（若有）、实体数、非零状态计数（按词表顺序，全为零时写 none）和页面链接。
 2. 类型页：标题、`description`（若有）、实体数与返回总览的链接、覆盖全部合法状态的计数表，然后是实体树。
-3. 实体树：顶层实体（无 parent，或 parent 属于其他类型）为第二级标题，子实体逐级加深到第六级；更深的实体在第六级标题下写成嵌套列表项，每深一级缩进两个空格。整体按先序遍历输出，同级排序键为（order，ID 序号）：未开启 independent_order 时 order 等于序号，即按 ID 数字排序；计划位置并列时按 ID 数字排序。
+3. 实体树：顶层实体（无 parent，或 parent 属于其他类型）为第二级标题，子实体逐级加深到第六级；更深的实体在第六级标题下写成嵌套列表项，每深一级缩进两个空格。整体按先序遍历输出，同级排序键为（order，ID 序号）：未开启 independent_order 时 order 等于序号，即按 ID 数字排序；计划位置并列时按 ID 数字排序。order 只在同一 parent 作用域内比较：顶层先列无 parent 的实体，再按 parent 分组列出跨类型子实体，组按 parent 类型的声明顺序、再按 parent 的 ID 序号排列，组内用同级排序键。
 4. 字段行：标题下一行，字段以“ · ”分隔，依次为 status、date、证据列、跨类型 parent、legacy、supersedes、superseded by、note，空字段省略。证据列按账本表头命名：规范布局为 anchor，项目布局为 owner。列表项把“ID + 名称”与字段写在同一行，跨类型子实体也作为字段写入。
 5. 证据列：合法的仓库相对路径渲染为从页面目录出发的相对链接，链接文字是行内代码；7 到 64 位的十六进制值视为提交哈希，只显示为行内代码、不加链接；anchor 规则不接受的其他形式（含冒号、绝对路径、`..` 等）同样只显示为代码文本。生成器不检查路径是否存在，那是 check 的职责。
 6. 跨类型关系：parent 属于其他类型的实体列在本类型页顶层，并带 `parent:` 字段；父实体在其所在页面写一行 `children of other types:`，先按类型声明顺序、再按同级排序键列出。supersedes 两个方向都写：supersedes 按登记顺序，superseded by 按类型声明顺序与 ID 序号。
