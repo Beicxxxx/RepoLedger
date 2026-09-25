@@ -6,8 +6,6 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from repo_ledger.cli import main
 from repo_ledger.config import LedgerConfig
 from repo_ledger.linter import lint_all
