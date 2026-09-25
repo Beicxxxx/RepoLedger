@@ -129,7 +129,7 @@ repo-ledger check --json
 
 - 父子关系用标题层级表达：顶层实体（无 parent，或 parent 属于其他类型）为 `##`，子实体为 `###`，依次到 `######`；更深的实体在第六级标题下改为嵌套列表，顺序不变。
 - 同级先按 `order`（计划位置）再按 ID 数字排序；未开启 `independent_order` 时 order 等于序号，即按 ID 数字排序。计划位置并列时同样按 ID 数字排序。order 只在同一 parent 下比较：顶层先列无 parent 的实体，再列 parent 属于其他类型的实体，按父实体分组（父实体的类型按 ledger.toml 声明顺序，同类型按 ID 数字），组内同样先按 order 再按 ID 数字。
-- 标题为“ID + 完整登记名称”。标题下一行是紧凑字段：status、date、anchor（owner 布局显示为 owner；路径渲染为从页面出发的相对链接，提交哈希只显示为不带链接的代码文本）、legacy（行内代码）、supersedes 与 superseded by（两个方向都写“ID + 名称”）、note。
+- 标题为“ID + 完整登记名称”。标题下一行是紧凑字段：status、date、anchor（owner 布局显示为 owner；路径渲染为从页面出发的相对链接，十六进制形状的文件名也按路径链接；只有恰好 40 或 64 位十六进制、被 `check` 判为不支持的提交哈希锚点，只显示为不带链接的代码文本）、legacy（行内代码）、supersedes 与 superseded by（两个方向都写“ID + 名称”）、note。
 - parent 属于其他类型的实体列在自己类型页的顶层，并带 `parent:` 字段；父实体所在的页面在该父实体下写一行 `children of other types:`。
 - 页面中每处 ID 后都紧跟完整登记名称：note 与类型 `description` 中出现的已登记 ID 若后面没有名称，生成时补上；未登记的 token 原样保留，登记名称本身逐字输出。
 - 登记文本只对会触发 Markdown 或 HTML 语法的字符加反斜杠转义（例如成对星号、反引号、尖括号标签、词边界下划线）；普通文字、中文和词内下划线逐字保留，因此原文里“ID + 名称”的写法不被转义打断。

@@ -237,17 +237,26 @@ def test_without_independent_order_siblings_sort_by_numeric_id(tmp_path, capsys)
                                      "### TASK-12 Twelve", "## TASK-10 Ten"]
 
 
-def test_owner_path_links_relative_to_the_page_and_commit_hash_stays_plain(tmp_path, capsys):
+def test_owner_path_links_relative_to_the_page_and_only_full_hashes_stay_plain(tmp_path, capsys):
+    sha256 = "0123456789ABCDEF" * 4
     rows = [row("TASK-1", "Path owner", layout="owner"),
-            row("TASK-2", "Short hash owner", anchor="6042577", layout="owner"),
-            row("TASK-3", "Full hash owner", anchor="a" * 40, layout="owner")]
+            row("TASK-2", "Hex-named file owner", anchor="6042577", layout="owner"),
+            row("TASK-3", "Full hash owner", anchor="a" * 40, layout="owner"),
+            row("TASK-4", "Full SHA-256 owner", anchor=sha256, layout="owner"),
+            row("TASK-5", "Forty-one hex file owner", anchor="c" * 41, layout="owner"),
+            row("TASK-6", "Sixty-three hex file owner", anchor="d" * 63, layout="owner")]
     root = make_project(tmp_path / "p", rows, layout="owner")
     page = text(generate(capsys, root) / "TASK.md")
 
     assert DOT + "owner: [`docs/proposal.md`](../proposal.md)" in fields_of(page, "TASK-1")
-    assert fields_of(page, "TASK-2").endswith(DOT + "owner: `6042577`")
+    # Only exactly 40 or 64 hex characters are a commit hash, the rule check uses for
+    # ERR_UNSUPPORTED_ANCHOR; any other hex-looking value is a path and gets its link.
+    assert fields_of(page, "TASK-2").endswith(DOT + "owner: [`6042577`](../../6042577)")
     assert fields_of(page, "TASK-3").endswith(DOT + "owner: `" + "a" * 40 + "`")
-    assert "](" not in fields_of(page, "TASK-2") + fields_of(page, "TASK-3")
+    assert fields_of(page, "TASK-4").endswith(DOT + "owner: `" + sha256 + "`")
+    assert "](" not in fields_of(page, "TASK-3") + fields_of(page, "TASK-4")
+    assert fields_of(page, "TASK-5").endswith(DOT + f"owner: [`{'c' * 41}`](../../{'c' * 41})")
+    assert fields_of(page, "TASK-6").endswith(DOT + f"owner: [`{'d' * 63}`](../../{'d' * 63})")
 
     deeper = text(generate(capsys, root, out="catalogue/types") / "TASK.md")
     assert DOT + "owner: [`docs/proposal.md`](../../docs/proposal.md)" in fields_of(deeper, "TASK-1")

@@ -8,6 +8,9 @@ from .git import inventory, safe_file
 # Pages written by repo-ledger index are registry content; with [index] check = true a page that
 # matches its regeneration byte for byte is verified instead of being rescanned as prose.
 GENERATED_PAGE_REASON = "generated index page verified by the index check"
+# A bare full object ID (SHA-1 or SHA-256) is a commit-shaped anchor, which is not supported;
+# any shorter or longer hex-looking value is an ordinary path. index uses the same rule.
+COMMIT_ANCHOR_RE = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 
 
 def _emitter(registry, issues):
@@ -27,7 +30,7 @@ def check_registry_invariants(registry, root):
         if not anchor and cfg.require_anchor:
             emit("ERR_MISSING_ANCHOR", row, "A tracked evidence file is required")
         elif anchor:
-            if ":" in anchor or re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", anchor):
+            if ":" in anchor or COMMIT_ANCHOR_RE.fullmatch(anchor):
                 emit("ERR_UNSUPPORTED_ANCHOR", row, "Historical anchors are not supported; no object validity is inferred")
             else:
                 try:
