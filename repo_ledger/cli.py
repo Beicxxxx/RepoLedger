@@ -263,6 +263,9 @@ def main(argv=None):
         elif issue.code == "ERR_INDEX_OUT_DIR":
             issue.suggestion = ("Pass --out DIR or set [index] out_dir to a dedicated directory; "
                                 "the index never overwrites or deletes files it did not generate.")
+        elif issue.code == "ERR_INDEX_INTERNAL":
+            issue.suggestion = ("This is a RepoLedger bug; no page was written. Report it with the registry "
+                                "that triggers it.")
         if args.json:
             output({"status": "FAIL", "complete": False, "issues": [issue.to_dict()]})
         else:

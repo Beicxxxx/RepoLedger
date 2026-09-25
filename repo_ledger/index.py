@@ -341,10 +341,12 @@ class _Renderer:
         if bullets:
             blocks.append("\n".join(bullets))
         if rendered != len(rows):
-            # Relation validation rules this out; never drop an entity silently.
-            raise LedgerError("ERR_RELATION_CYCLE",
-                              f"{len(rows) - rendered} {type_name} entities are unreachable from a top-level entity",
-                              f"{self.registry.path}:1:1")
+            # Unreachable: relation validation runs first. A dedicated internal code (not an
+            # assert, which python -O strips) keeps any entity from ever being dropped silently.
+            raise LedgerError("ERR_INDEX_INTERNAL",
+                              f"{len(rows) - rendered} {type_name} entities are unreachable from a top-level "
+                              "entity although the relations validated",
+                              f"{self.registry.path}:1:1", category="incomplete")
         return blocks
 
     def status_counts(self, type_name, rows):

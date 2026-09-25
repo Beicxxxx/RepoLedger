@@ -746,6 +746,20 @@ def test_index_refuses_a_registry_with_broken_relations(tmp_path, capsys):
     assert not (root / "docs" / "index").exists()
 
 
+def test_an_unreachable_entity_is_an_internal_error_never_a_silent_drop(tmp_path, capsys, monkeypatch):
+    # Relation validation rules this out; bypass it to reach the renderer's own guard.
+    monkeypatch.setattr("repo_ledger.index.relation_issues", lambda registry: [])
+    rows = [row("TASK-1", "Loop one", parent="TASK-2"), row("TASK-2", "Loop two", parent="TASK-1")]
+    root = make_project(tmp_path / "p", rows)
+    code, report = index(capsys, root, "--out", str(root / "docs" / "index"))
+
+    assert code == 3
+    issue = report["issues"][0]
+    assert issue["code"] == "ERR_INDEX_INTERNAL" and issue["category"] == "incomplete"
+    assert "2 TASK entities" in issue["reason"] and "bug" in issue["suggestion"]
+    assert not (root / "docs" / "index").exists()
+
+
 def test_index_refuses_to_write_next_to_the_registry(tmp_path, capsys):
     root = make_project(tmp_path / "p", [row("TASK-1", "Only")])
     code, report = index(capsys, root, "--out", str(root / ".ledger"))
