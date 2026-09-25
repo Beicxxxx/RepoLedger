@@ -176,14 +176,21 @@ def test_check_legacy_skips_verified_generated_pages(tmp_path, capsys):
 
 
 def test_unverifiable_index_makes_check_incomplete(tmp_path, capsys):
-    rows = ROWS.replace("| OPEN | TASK-1 |", "| OPEN | TASK-9 |")
-    root = make_repo(tmp_path, 'out_dir = "docs/index"\ncheck = true\n', rows)
+    root = make_repo(tmp_path, 'out_dir = "docs/index"\ncheck = true\n')
+    generate(capsys, root)
+    registry = root / ".ledger" / "ENTITY_REGISTRY.md"
+    registry.write_text(registry.read_text(encoding="utf-8").replace("| OPEN | TASK-1 |", "| OPEN | TASK-9 |"),
+                        encoding="utf-8")
 
     code, report = run(capsys, root, "check")
     assert code == 3
     assert report["complete"] is False
     codes = [issue["code"] for issue in report["issues"]]
     assert "ERR_RELATION_NOT_FOUND" in codes and "ERR_INDEX_UNVERIFIED" in codes
+    # Pages that could not be verified are ordinary files again: no "verified" exclusion.
+    assert VERIFIED not in reasons(report["scope"]["excluded"]).values()
+    assert all(page in report["scope"]["scanned"] for page in PAGES)
+    assert report["scope"]["index"]["registry_sha256"] is None
 
 
 def test_lint_all_mirrors_the_check_integration(tmp_path, capsys):

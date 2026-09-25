@@ -399,13 +399,13 @@ def verify_configured_index(root, config):
     """Staleness check that repo-ledger check runs when [index] check = true.
 
     Returns (issues, audit, generated). The generated page paths are excluded from the
-    prose scans because this check verifies their content by byte-exact regeneration.
+    prose scans because this check verifies their content by byte-exact regeneration;
+    when the pages cannot be regenerated nothing is excluded and check is incomplete.
     """
     out_rel = config.index.out_dir
     audit = {"out_dir": out_rel, "registry_sha256": None,
              "pages": [f"{out_rel}/{name}" for name in page_names(config)],
              "missing": [], "stale": [], "extra": []}
-    generated = generated_pages(config)
     try:
         out_dir = resolve_out_dir(root, config)
         build = build_index(root, config, out_dir)
@@ -415,7 +415,7 @@ def verify_configured_index(root, config):
         return [Issue("ERR_INDEX_UNVERIFIED", f"{out_rel}:1:1", exc.issue.entity,
                       f"Index pages could not be regenerated: {exc.issue.reason}",
                       "Fix the registry problem reported by check, then run repo-ledger index.",
-                      "incomplete")], audit, generated
+                      "incomplete")], audit, frozenset()
     audit["registry_sha256"] = build.registry_sha256
     issues = []
     for kind, names in compare_index(build, out_dir).items():
@@ -423,4 +423,4 @@ def verify_configured_index(root, config):
         for name in names:
             audit[kind].append(f"{out_rel}/{name}")
             issues.append(Issue("ERR_INDEX_STALE", f"{out_rel}/{name}:1:1", "", reason, suggestion))
-    return issues, audit, generated
+    return issues, audit, generated_pages(config)
