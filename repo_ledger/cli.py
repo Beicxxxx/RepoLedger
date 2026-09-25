@@ -6,7 +6,8 @@ import sys
 from .config import LedgerConfig, find_config_file
 from .errors import LedgerError
 from .git import repository_root, safe_file
-from .index import build_index, compare_index, display_path, resolve_out_dir, write_index
+from .index import (build_index, compare_index, display_path, generated_pages, resolve_out_dir,
+                    verify_configured_index, write_index)
 from .linter import aggregate, check_registry_invariants, scan, scan_legacy
 from .registry import EntityRegistry
 from .search import search_entities
@@ -191,7 +192,9 @@ def main(argv=None):
             for top in sorted(grouped.get("", []), key=order_key):
                 render(top, 0)
         elif args.command == "check-legacy":
-            legacy_issues, legacy_audit = scan_legacy(root, registry)
+            # Same scope as the guard inside check: verified generated pages are not prose.
+            generated = generated_pages(cfg) if cfg.index.check else frozenset()
+            legacy_issues, legacy_audit = scan_legacy(root, registry, generated)
             scope = {"view": "worktree", "legacy_guard": legacy_audit}
             result = {"status": "FAIL" if legacy_issues else "PASS", "entities_count": len(registry.rows),
                       "complete": not any(i.category == "incomplete" for i in legacy_issues),
@@ -206,11 +209,18 @@ def main(argv=None):
             return 3 if not result["complete"] else int(bool(legacy_issues))
         else:
             issues = check_registry_invariants(registry, root)
-            scanned, audit = scan(root, registry)
+            index_issues, index_audit, generated = [], None, frozenset()
+            if cfg.index.check:
+                index_issues, index_audit, generated = verify_configured_index(root, cfg)
+            scanned, audit = scan(root, registry, generated)
             issues += scanned
-            legacy_issues, legacy_audit = scan_legacy(root, registry)
+            legacy_issues, legacy_audit = scan_legacy(root, registry, generated)
             issues += legacy_issues
             audit["legacy_guard"] = legacy_audit
+            if index_audit is not None:
+                # Added only with [index] check = true; every existing field is unchanged.
+                audit["index"] = index_audit
+                issues += index_issues
             result = {"status": "FAIL" if issues else "PASS", "entities_count": len(registry.rows),
                       "complete": not any(i.category == "incomplete" for i in issues),
                       "scope": audit, "issues": aggregate(issues)}
@@ -247,6 +257,9 @@ def main(argv=None):
                                 "choose a free value or let allocate pick the next one.")
         elif issue.code == "ERR_INVALID_ORDER":
             issue.suggestion = "Use a positive integer without leading zeros."
+        elif issue.code == "ERR_INDEX_OUT_DIR" and issue.reason.startswith("No output directory"):
+            issue.suggestion = ("Pass --out DIR, or add [index] out_dir = \"<repository-relative directory>\" "
+                                "to ledger.toml.")
         elif issue.code == "ERR_INDEX_OUT_DIR":
             issue.suggestion = ("Pass --out DIR or set [index] out_dir to a dedicated directory; "
                                 "the index never overwrites or deletes files it did not generate.")

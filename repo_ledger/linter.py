@@ -5,6 +5,11 @@ import re
 from .errors import Issue, LedgerError
 from .git import inventory, safe_file
 
+# Pages written by repo-ledger index are registry content; with [index] check = true they are
+# verified by byte-exact regeneration instead of being rescanned as prose.
+GENERATED_PAGE_REASON = "generated index page verified by the index check"
+
+
 def _emitter(registry, issues):
     def emit(code, row, reason):
         issues.append(Issue(code, f"{registry.path}:{registry.lines.get(row.id, 1)}:1",
@@ -74,7 +79,7 @@ def relation_issues(registry):
                         stack.append((target, False))
     return issues
 
-def scan(root, registry):
+def scan(root, registry, generated=frozenset()):
     tracked, new, git_ignored = inventory(root)
     cfg = registry.config
     audit = {"view": "worktree", "scope": "full configured text scope",
@@ -93,6 +98,8 @@ def scan(root, registry):
         reason = None
         if rel == cfg.registry_path:
             reason = "authoritative registry parsed separately"
+        elif rel in generated:
+            reason = GENERATED_PAGE_REASON
         elif any(fnmatch.fnmatchcase(rel, p) for p in cfg.ignore_globs):
             reason = "configured ignore"
         elif Path(rel).suffix not in set(cfg.code_extensions) | {".md"}:
@@ -163,7 +170,7 @@ def _fence_start(line):
     return (match.group(1)[0], match.group(2)) if match else None
 
 
-def scan_legacy(root, registry):
+def scan_legacy(root, registry, generated=frozenset()):
     """Reject explicitly enumerated retired aliases in a declared text scope.
 
     The regular expression is generated only from escaped, configured literal
@@ -210,6 +217,8 @@ def scan_legacy(root, registry):
         reason = None
         if rel == cfg.registry_path:
             reason = "authoritative registry parsed separately"
+        elif rel in generated:
+            reason = GENERATED_PAGE_REASON
         elif any(fnmatch.fnmatchcase(rel, pattern) for pattern in cfg.ignore_globs):
             reason = "configured ledger ignore"
         elif _matches_any(rel, guard.exclude_globs):
@@ -259,8 +268,13 @@ def scan_legacy(root, registry):
 
 
 def lint_all(root, registry):
-    return (check_registry_invariants(registry, root) + scan(root, registry)[0]
-            + scan_legacy(root, registry)[0])
+    """Library form of check: invariants, reference scan, retired-code guard, index check."""
+    index_issues, generated = [], frozenset()
+    if registry.config.index.check:
+        from .index import verify_configured_index
+        index_issues, _, generated = verify_configured_index(root, registry.config)
+    return (check_registry_invariants(registry, root) + scan(root, registry, generated)[0]
+            + scan_legacy(root, registry, generated)[0] + index_issues)
 
 def aggregate(issues):
     groups = {}
