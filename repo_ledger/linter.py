@@ -5,13 +5,17 @@ import re
 from .errors import Issue, LedgerError
 from .git import inventory, safe_file
 
-def check_registry_invariants(registry, root):
-    tracked, _, _ = inventory(root)
-    issues = []
-    rows = {r.id: r for r in registry.rows}
+def _emitter(registry, issues):
     def emit(code, row, reason):
         issues.append(Issue(code, f"{registry.path}:{registry.lines.get(row.id, 1)}:1",
                             row.id, reason, "Inspect the entity and its evidence; correct the cause explicitly."))
+    return emit
+
+
+def check_registry_invariants(registry, root):
+    tracked, _, _ = inventory(root)
+    issues = []
+    emit = _emitter(registry, issues)
     for row in registry.rows:
         cfg = registry.config.types[row.id.rsplit("-", 1)[0]]
         anchor = row.anchor
@@ -27,6 +31,14 @@ def check_registry_invariants(registry, root):
                         emit("ERR_ANCHOR_NOT_FOUND", row, f"Anchor must be an existing tracked regular file: {anchor}")
                 except LedgerError as exc:
                     emit(exc.issue.code, row, exc.issue.reason)
+    return issues + relation_issues(registry)
+
+
+def relation_issues(registry):
+    """Relation existence, self-reference and cycle checks; they need no Git inventory."""
+    issues = []
+    emit = _emitter(registry, issues)
+    rows = {r.id: r for r in registry.rows}
     for relation in ("parent", "supersedes"):
         graph = {}
         for row in registry.rows:

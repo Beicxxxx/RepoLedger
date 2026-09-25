@@ -129,12 +129,15 @@ class EntityRegistry:
         self.table_header = list(TABLE_HEADER)
 
     @classmethod
-    def load(cls, path, config):
+    def load(cls, path, config, text=None):
+        """Parse the registry at ``path``; ``text`` lets a caller parse the exact bytes it read."""
         reg = cls(path, config)
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeError) as exc:
-            raise LedgerError("ERR_READ", str(exc), f"{path}:1:1", category="incomplete") from exc
+        if text is None:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise LedgerError("ERR_READ", str(exc), f"{path}:1:1", category="incomplete") from exc
+        lines = text.splitlines()
         if not lines or lines[0] != "<!-- schema: 1.0 -->":
             raise LedgerError("ERR_SCHEMA", "First line must declare supported schema 1.0", f"{path}:1:1")
         header = None
