@@ -440,6 +440,23 @@ def test_out_outside_the_project_is_refused(tmp_path, capsys, monkeypatch):
     assert not (root / ".git" / "README.md").exists()
 
 
+def test_symlinked_config_out_dir_is_an_out_dir_error(tmp_path, capsys):
+    for out_dir, link, target in [("docs/index", "docs/index", "catalogue"),
+                                  ("pages/index", "pages", "real-pages")]:
+        root = make_project(tmp_path / out_dir.replace("/", "-"), [row("TASK-1", "Only")],
+                            index=f'out_dir = "{out_dir}"\n')
+        (root / target).mkdir()
+        (root / link).symlink_to(root / target)
+
+        for extra in ((), ("--check",)):
+            code, report = index(capsys, root, *extra)
+            assert code == 2, (out_dir, extra)
+            issue = report["issues"][0]
+            assert issue["code"] == "ERR_INDEX_OUT_DIR"
+            assert out_dir in issue["reason"] and "out_dir" in issue["suggestion"]
+        assert list((root / target).iterdir()) == []
+
+
 def test_registry_directory_is_refused_whatever_the_registry_suffix(tmp_path, capsys):
     root = make_project(tmp_path / "p", [row("TASK-1", "Only")])
     (root / ".ledger" / "ENTITY_REGISTRY.md").rename(root / ".ledger" / "REGISTRY.txt")

@@ -359,3 +359,16 @@ def test_check_legacy_scans_pages_when_the_index_check_is_off(tmp_path, capsys):
     assert code == 1
     assert located(report) == [("ERR_RETIRED_CODE", position(root, "docs/index/TASK.md", "OLD-TASK-1"))]
     assert VERIFIED not in reasons(report["scope"]["legacy_guard"]["excluded"]).values()
+
+
+def test_symlinked_out_dir_is_a_configuration_error_for_check(tmp_path, capsys):
+    root = make_repo(tmp_path, CHECKED)
+    (root / "catalogue").mkdir()
+    (root / "docs" / "index").symlink_to(root / "catalogue")
+
+    for command in ("check", "check-legacy"):
+        code, report = run(capsys, root, command)
+        assert code == 2, command
+        issue = report["issues"][0]
+        assert issue["code"] == "ERR_INDEX_OUT_DIR" and issue["category"] == "configuration"
+        assert "docs/index" in issue["reason"] and "out_dir" in issue["suggestion"]

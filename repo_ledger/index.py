@@ -142,7 +142,12 @@ def resolve_out_dir(root, config, cli_out=None):
         if not out_dir.is_relative_to(root):
             refuse(f"The output directory must be inside the project root {root}: {out_dir}")
     elif config.index.out_dir:
-        out_dir = safe_file(root, config.index.out_dir).resolve()
+        try:
+            out_dir = safe_file(root, config.index.out_dir).resolve()
+        except LedgerError as exc:
+            # A symlinked out_dir is a configuration problem, not a registry violation.
+            refuse(f"{exc.issue.reason}; [index] out_dir must be a real directory inside the project, "
+                   "with no symlink on the way")
     else:
         refuse("No output directory: pass --out DIR or set out_dir in the [index] table of ledger.toml")
     if out_dir == root:
