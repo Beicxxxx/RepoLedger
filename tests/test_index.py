@@ -658,8 +658,44 @@ def test_registry_text_cannot_inject_markdown(tmp_path, capsys):
 
     assert "## TASK-1 Use \\<details> \\*now\\* \\`x\\` \\#" in page.splitlines()
     assert "## TASK-2 NOT_PRIMARY \\_\\_init\\_\\_.py" in page.splitlines()
+    # The bare URL is written verbatim as an autolink rather than escaped character by character.
     assert fields_of(page, "TASK-2").endswith(
-        "note: see [site\\](http://example.invalid) \\&amp; more \\<b>x\\</b> \\~y\\~ \\$5 a\\\\\\*b")
+        "note: see [site\\](<http://example.invalid)> \\&amp; more \\<b>x\\</b> \\~y\\~ \\$5 a\\\\\\*b")
+
+
+def test_bare_urls_and_long_character_references_keep_their_visible_text(tmp_path, capsys):
+    notes = {
+        # GFM autolinks a bare URL and would show backslash escapes inside it, so URLs are
+        # written verbatim: with a scheme (in any letter case) as an autolink ...
+        "TASK-1": ("see https://example.com/a*b~c_d$e", "see <https://example.com/a*b~c_d$e>"),
+        "TASK-2": ("HTTP://example.com/a_b_ and ftp://example.com/_x_",
+                   "<HTTP://example.com/a_b_> and <ftp://example.com/_x_>"),
+        # ... www. addresses, and URLs whose autolink text a renderer would decode, as code.
+        "TASK-3": ("www.example.com/_a_ done", "`www.example.com/_a_` done"),
+        "TASK-4": ("https://example.com/?q=a&amp;b and https://example.com/a%20b",
+                   "`https://example.com/?q=a&amp;b` and `https://example.com/a%20b`"),
+        "TASK-5": ("https://xn--fsq.example/a", "`https://xn--fsq.example/a`"),
+        # A backslash just before a URL is escaped so that it cannot escape the wrapper.
+        "TASK-6": ("C:\\https://example.com/a", "C:\\\\<https://example.com/a>"),
+        # Numeric character references of any length are escaped, not only 1 to 7 digits.
+        "TASK-7": ("&#12345678; &#x1234567; &#65;", "\\&#12345678; \\&#x1234567; \\&#65;"),
+    }
+    rows = [row(entity_id, f"Note {entity_id}", note=note) for entity_id, (note, _) in notes.items()]
+    rows.append(row("TASK-8", "Docs at https://example.com/a_b_"))
+    root = make_project(tmp_path / "p", rows)
+    config = root / "ledger.toml"
+    config.write_text(text(config).replace(
+        'description = "Work items"', 'description = "See https://example.com/a|b and www.example.com/c|d"'),
+        encoding="utf-8")
+    out = generate(capsys, root)
+    page = text(out / "TASK.md")
+
+    for entity_id, (_, rendered) in notes.items():
+        assert fields_of(page, entity_id).endswith(DOT + "note: " + rendered), entity_id
+    assert "## TASK-8 Docs at <https://example.com/a_b_>" in page.splitlines()
+    # In a table cell the pipe inside a URL is escaped as well.
+    assert ("| TASK | See <https://example.com/a\\|b> and `www.example.com/c\\|d` | 8 | READY 8 | [TASK.md](TASK.md) |"
+            in text(out / "README.md").splitlines())
 
 
 def test_legacy_alias_is_rendered_as_inline_code(tmp_path, capsys):
