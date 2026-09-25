@@ -25,7 +25,9 @@ _COMMIT_RE = re.compile(r"[0-9a-fA-F]{7,64}")
 _ENTITY_REFERENCE_RE = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});")
 _ASCII_PUNCTUATION = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 _UNSAFE_IN_LINK = frozenset(" \"%#'()<>?[\\]^`{|}")
-_REGENERATE = "Run repo-ledger index to regenerate the pages, then review and commit them."
+_REGENERATE = ("Run repo-ledger index to regenerate the pages, then review and commit them; until a page "
+               "matches, check scans it like any other file, and the scan hits on it disappear once it "
+               "is regenerated.")
 _DIFFERENCES = {
     "missing": ("Index page is missing", _REGENERATE),
     "stale": ("Index page differs from the page regenerated from the registry", _REGENERATE),
@@ -398,9 +400,10 @@ def write_index(build, out_dir):
 def verify_configured_index(root, config):
     """Staleness check that repo-ledger check runs when [index] check = true.
 
-    Returns (issues, audit, generated). The generated page paths are excluded from the
-    prose scans because this check verifies their content by byte-exact regeneration;
-    when the pages cannot be regenerated nothing is excluded and check is incomplete.
+    Returns (issues, audit, verified). Only the pages that match their regeneration byte for
+    byte are verified and excluded from the prose scans. A missing or stale page (hand-edited,
+    hand-written or a symlink) is scanned like any other file; when the pages cannot be
+    regenerated nothing is excluded and check is incomplete.
     """
     out_rel = config.index.out_dir
     audit = {"out_dir": out_rel, "registry_sha256": None,
@@ -418,9 +421,11 @@ def verify_configured_index(root, config):
                       "incomplete")], audit, frozenset()
     audit["registry_sha256"] = build.registry_sha256
     issues = []
-    for kind, names in compare_index(build, out_dir).items():
+    differences = compare_index(build, out_dir)
+    for kind, names in differences.items():
         reason, suggestion = _DIFFERENCES[kind]
         for name in names:
             audit[kind].append(f"{out_rel}/{name}")
             issues.append(Issue("ERR_INDEX_STALE", f"{out_rel}/{name}:1:1", "", reason, suggestion))
-    return issues, audit, generated_pages(config)
+    unverified = {f"{out_rel}/{name}" for name in differences["missing"] + differences["stale"]}
+    return issues, audit, generated_pages(config) - unverified

@@ -5,8 +5,8 @@ import re
 from .errors import Issue, LedgerError
 from .git import inventory, safe_file
 
-# Pages written by repo-ledger index are registry content; with [index] check = true they are
-# verified by byte-exact regeneration instead of being rescanned as prose.
+# Pages written by repo-ledger index are registry content; with [index] check = true a page that
+# matches its regeneration byte for byte is verified instead of being rescanned as prose.
 GENERATED_PAGE_REASON = "generated index page verified by the index check"
 
 

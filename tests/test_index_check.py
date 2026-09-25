@@ -29,11 +29,14 @@ ROWS = (
     "| ISSUE-1 | Bug | OPEN | TASK-1 | 1 | docs/proposal.md |  | 2026-09-02 |  | found in TASK-1 |\n")
 PAGES = ["docs/index/README.md", "docs/index/TASK.md", "docs/index/ISSUE.md"]
 VERIFIED = "generated index page verified by the index check"
+CHECKED = 'out_dir = "docs/index"\ncheck = true\n'
 
 
-def make_repo(root: Path, index_table: str, rows: str = ROWS) -> Path:
+def make_repo(root: Path, index_table: str, rows: str = ROWS, guard: str = "") -> Path:
     subprocess.run(["git", "init", str(root)], check=True, capture_output=True)
     config = '[ledger]\nschema_version = "1.0"\nregistry_path = ".ledger/ENTITY_REGISTRY.md"\n' + TYPES
+    if guard:
+        config += "\n[legacy_guard]\n" + guard
     if index_table:
         config += "\n[index]\n" + index_table
     (root / "ledger.toml").write_text(config, encoding="utf-8")
@@ -58,6 +61,24 @@ def generate(capsys, root: Path, *extra: str) -> None:
 
 def reasons(entries):
     return {entry["file"]: entry["reason"] for entry in entries}
+
+
+def located(report):
+    """(code, location) of every reported occurrence."""
+    return sorted((issue["code"], location) for issue in report["issues"] for location in issue["locations"])
+
+
+def position(root: Path, page: str, token: str, occurrence: int = 0) -> str:
+    """page:line:column of a token, as the scanners report it."""
+    hits = [f"{page}:{number}:{line.index(token) + 1}"
+            for number, line in enumerate((root / page).read_text(encoding="utf-8").splitlines(), 1)
+            if token in line]
+    return hits[occurrence]
+
+
+def load_registry(root: Path) -> EntityRegistry:
+    config = LedgerConfig.load(root / "ledger.toml")
+    return EntityRegistry.load(root / config.registry_path, config)
 
 
 def test_fresh_index_passes_check_and_generated_pages_are_not_rescanned(tmp_path, capsys):
@@ -94,8 +115,13 @@ def test_stale_index_fails_check_with_located_issues(tmp_path, capsys):
         f"{page}:1:1" for page in PAGES]
     assert all("differs" in issue["reason"] and "repo-ledger index" in issue["suggestion"]
                for issue in stale)
+    assert all("hits on it disappear once it is regenerated" in issue["suggestion"] for issue in stale)
     assert report["scope"]["index"]["stale"] == PAGES
-    assert [issue["code"] for issue in report["issues"]] == ["ERR_INDEX_STALE"]
+    # A stale page is not verified, so it is scanned like any file until it is regenerated:
+    # the legacy alias rendered on TASK.md is reported with it.
+    assert [issue["code"] for issue in report["issues"]] == ["ERR_RETIRED_CODE", "ERR_INDEX_STALE"]
+    assert report["issues"][0]["locations"] == [position(root, "docs/index/TASK.md", "OLD-TASK-1")]
+    assert VERIFIED not in reasons(report["scope"]["excluded"]).values()
 
     generate(capsys, root)
     assert run(capsys, root, "check")[0] == 0
@@ -202,3 +228,80 @@ def test_lint_all_mirrors_the_check_integration(tmp_path, capsys):
 
     (root / "docs" / "index" / "TASK.md").unlink()
     assert [issue.code for issue in lint_all(root, registry)] == ["ERR_INDEX_STALE"]
+
+
+# Only pages that match their regeneration byte for byte are excluded from the scans; a
+# tampered, hand-written or symlinked page is scanned like any other file.
+TAMPERED = "Tampered: see TASK-99 and OLD-TASK-1 and oldcode7.\n"
+
+
+def test_tampered_page_is_scanned_until_it_is_regenerated(tmp_path, capsys):
+    root = make_repo(tmp_path, CHECKED, guard='forbidden_tokens = ["oldcode7"]\n')
+    generate(capsys, root)
+    page = root / "docs" / "index" / "TASK.md"
+    page.write_text(page.read_text(encoding="utf-8") + TAMPERED, encoding="utf-8")
+
+    code, report = run(capsys, root, "check")
+    assert code == 1
+    task = "docs/index/TASK.md"
+    assert located(report) == sorted([
+        ("ERR_UNREGISTERED_ENTITY", position(root, task, "TASK-99")),
+        ("ERR_RETIRED_CODE", position(root, task, "OLD-TASK-1", 0)),
+        ("ERR_RETIRED_CODE", position(root, task, "OLD-TASK-1", 1)),
+        ("ERR_RETIRED_CODE", position(root, task, "oldcode7")),
+        ("ERR_INDEX_STALE", f"{task}:1:1")])
+    assert report["scope"]["index"]["stale"] == [task]
+    assert task in report["scope"]["scanned"] and task in report["scope"]["legacy_guard"]["scanned"]
+    assert task not in reasons(report["scope"]["excluded"])
+    assert task not in reasons(report["scope"]["legacy_guard"]["excluded"])
+    # The untouched pages still verify, so they stay excluded.
+    for untouched in ("docs/index/README.md", "docs/index/ISSUE.md"):
+        assert reasons(report["scope"]["excluded"])[untouched] == VERIFIED
+        assert reasons(report["scope"]["legacy_guard"]["excluded"])[untouched] == VERIFIED
+
+    # lint_all applies the same rule.
+    assert sorted((issue.code, issue.location) for issue in lint_all(root, load_registry(root))) == located(report)
+
+    # Regenerating replaces the tampered page and every hit on it disappears.
+    generate(capsys, root)
+    code, report = run(capsys, root, "check")
+    assert code == 0, report["issues"]
+    assert lint_all(root, load_registry(root)) == []
+
+
+def test_hand_written_page_at_a_page_path_is_scanned(tmp_path, capsys):
+    root = make_repo(tmp_path, CHECKED)
+    generate(capsys, root)
+    issue_page = "docs/index/ISSUE.md"
+    (root / issue_page).write_text("Hand-written: TASK-77 and OLD-TASK-1\n", encoding="utf-8")
+
+    code, report = run(capsys, root, "check")
+    assert code == 1
+    assert located(report) == sorted([
+        ("ERR_UNREGISTERED_ENTITY", position(root, issue_page, "TASK-77")),
+        ("ERR_RETIRED_CODE", position(root, issue_page, "OLD-TASK-1")),
+        ("ERR_INDEX_STALE", f"{issue_page}:1:1")])
+    assert issue_page in report["scope"]["scanned"]
+    assert issue_page not in reasons(report["scope"]["excluded"])
+    assert sorted((issue.code, issue.location) for issue in lint_all(root, load_registry(root))) == located(report)
+
+
+def test_symlinked_page_is_not_trusted(tmp_path, capsys):
+    root = make_repo(tmp_path, CHECKED)
+    generate(capsys, root)
+    page = root / "docs" / "index" / "TASK.md"
+    page.unlink()
+    page.symlink_to(Path("..") / ".." / "ledger.toml")
+
+    code, report = run(capsys, root, "check")
+    # The link is reported missing and is not excluded; scanning refuses to follow it.
+    assert code == 3 and report["complete"] is False
+    task = "docs/index/TASK.md"
+    assert report["scope"]["index"]["missing"] == [task]
+    assert task not in reasons(report["scope"]["excluded"])
+    assert task not in reasons(report["scope"]["legacy_guard"]["excluded"])
+    assert located(report) == sorted([("ERR_INDEX_STALE", f"{task}:1:1"),
+                                      ("ERR_SCAN_INCOMPLETE", f"{task}:1:1"),
+                                      ("ERR_SCAN_INCOMPLETE", f"{task}:1:1")])
+    assert sorted(issue.code for issue in lint_all(root, load_registry(root))) == [
+        "ERR_INDEX_STALE", "ERR_SCAN_INCOMPLETE", "ERR_SCAN_INCOMPLETE"]
