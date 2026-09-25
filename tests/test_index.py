@@ -262,6 +262,16 @@ def test_owner_path_links_relative_to_the_page_and_only_full_hashes_stay_plain(t
     assert DOT + "owner: [`docs/proposal.md`](../../docs/proposal.md)" in fields_of(deeper, "TASK-1")
 
 
+def test_ampersand_in_a_path_is_percent_encoded_in_the_link(tmp_path, capsys):
+    rows = [row("TASK-1", "Entity-looking path", anchor="docs/a&amp;b.md"),
+            row("TASK-2", "Plain ampersand path", anchor="docs/R&D notes.md")]
+    page = text(generate(capsys, make_project(tmp_path / "p", rows)) / "TASK.md")
+
+    # Link destinations decode character references, so a literal & could change the target.
+    assert fields_of(page, "TASK-1").endswith(DOT + "anchor: [`docs/a&amp;b.md`](../a%26amp;b.md)")
+    assert fields_of(page, "TASK-2").endswith(DOT + "anchor: [`docs/R&D notes.md`](../R%26D%20notes.md)")
+
+
 def test_unicode_names_are_written_verbatim_as_utf8(tmp_path, capsys):
     name = "中文任务 ✓ café 🚀"
     rows = [row("TASK-1", name, note="依赖 TASK-2 Ünïcode – ok"), row("TASK-2", "Ünïcode – ok")]
