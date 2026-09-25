@@ -126,7 +126,10 @@ class IndexBuild:
 
 
 def resolve_out_dir(root, config, cli_out=None):
-    """--out (relative to the current directory) wins over [index] out_dir (relative to root)."""
+    """--out (relative to the current directory) wins over [index] out_dir (relative to root).
+
+    Either way the resolved directory must lie inside the project root.
+    """
     root = Path(root).resolve()
     location = f"{root / 'ledger.toml'}:1:1"
 
@@ -134,7 +137,10 @@ def resolve_out_dir(root, config, cli_out=None):
         raise LedgerError("ERR_INDEX_OUT_DIR", reason, location, category="configuration")
 
     if cli_out is not None:
+        # resolve() follows symlinks and "..", so a link that leaves the project is refused too.
         out_dir = Path(cli_out).resolve()
+        if not out_dir.is_relative_to(root):
+            refuse(f"The output directory must be inside the project root {root}: {out_dir}")
     elif config.index.out_dir:
         out_dir = safe_file(root, config.index.out_dir).resolve()
     else:
@@ -146,7 +152,7 @@ def resolve_out_dir(root, config, cli_out=None):
     if out_dir.exists() and not out_dir.is_dir():
         refuse(f"The output path is not a directory: {out_dir}")
     registry = (root / config.registry_path).resolve()
-    if registry.parent == out_dir and registry.suffix.lower() == ".md":
+    if registry.parent == out_dir:
         refuse("The output directory holds the registry; choose a dedicated directory for the index")
     return out_dir
 

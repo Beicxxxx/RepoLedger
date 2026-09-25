@@ -396,15 +396,67 @@ def test_config_out_dir_is_used_and_out_flag_overrides_it(tmp_path, capsys, monk
         text(root / "catalogue" / "TASK.md"), "TASK-1")
 
     before = snapshot(root / "catalogue")
-    code, report = index(capsys, root, "--out", str(tmp_path / "elsewhere"))
-    assert code == 0 and (tmp_path / "elsewhere" / "TASK.md").is_file()
+    code, report = index(capsys, root, "--out", str(root / "elsewhere"))
+    assert code == 0 and (root / "elsewhere" / "TASK.md").is_file()
+    assert report["out_dir"] == "elsewhere"
     assert snapshot(root / "catalogue") == before
 
     # A relative --out resolves against the current directory, like --root.
-    monkeypatch.chdir(tmp_path)
     capsys.readouterr()
     assert main(["index", "--root", str(root), "--out", "relative-out", "--json"]) == 0
-    assert (tmp_path / "relative-out" / "MODEL.md").is_file()
+    assert (root / "docs" / "relative-out" / "MODEL.md").is_file()
+    assert not (root / "relative-out").exists()
+
+
+def test_out_outside_the_project_is_refused(tmp_path, capsys, monkeypatch):
+    root = make_project(tmp_path / "p", [row("TASK-1", "Only")], git=True)
+    outside = tmp_path / "outside"
+    (outside / "target").mkdir(parents=True)
+    (root / "docs" / "linkout").symlink_to(outside / "target")
+    (root / "docs" / "gitlink").symlink_to(root / ".git")
+    (root / "docs" / "ledgerlink").symlink_to(root / ".ledger")
+
+    monkeypatch.chdir(root)
+    attempts = [
+        "..",                                   # the parent of the project root
+        str(outside / "absolute"),              # an absolute path elsewhere
+        str(root / ".." / "outside" / "dots"),  # ".." inside an absolute path
+        "docs/linkout",                         # a link inside the project to the outside
+        "docs/gitlink",                         # a link to .git
+        "docs/ledgerlink",                      # a link to the registry directory
+    ]
+    for out in attempts:
+        capsys.readouterr()
+        code = main(["index", "--root", str(root), "--out", out, "--json"])
+        report = json.loads(capsys.readouterr().out)
+        assert code == 2, out
+        assert report["issues"][0]["code"] == "ERR_INDEX_OUT_DIR", out
+
+    # Nothing was written outside the project, into .git or next to the registry.
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["outside", "p"]
+    assert sorted(path.name for path in outside.iterdir()) == ["target"]
+    assert list((outside / "target").iterdir()) == []
+    assert sorted(path.name for path in (root / ".ledger").iterdir()) == ["ENTITY_REGISTRY.md"]
+    assert not (root / ".git" / "README.md").exists()
+
+
+def test_registry_directory_is_refused_whatever_the_registry_suffix(tmp_path, capsys):
+    root = make_project(tmp_path / "p", [row("TASK-1", "Only")])
+    (root / ".ledger" / "ENTITY_REGISTRY.md").rename(root / ".ledger" / "REGISTRY.txt")
+    config = root / "ledger.toml"
+    config.write_text(text(config).replace(".ledger/ENTITY_REGISTRY.md", ".ledger/REGISTRY.txt"),
+                      encoding="utf-8")
+
+    code, report = index(capsys, root, "--out", str(root / ".ledger"))
+    assert code == 2
+    assert report["issues"][0]["code"] == "ERR_INDEX_OUT_DIR"
+    assert sorted(path.name for path in (root / ".ledger").iterdir()) == ["REGISTRY.txt"]
+
+    config.write_text(text(config) + '\n[index]\nout_dir = ".ledger"\n', encoding="utf-8")
+    code, report = index(capsys, root)
+    assert code == 2
+    assert report["issues"][0]["code"] == "ERR_INDEX_OUT_DIR"
+    assert sorted(path.name for path in (root / ".ledger").iterdir()) == ["REGISTRY.txt"]
 
 
 def test_index_without_an_output_directory_is_a_configuration_error(tmp_path, capsys):
