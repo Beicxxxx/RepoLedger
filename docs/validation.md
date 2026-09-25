@@ -79,3 +79,21 @@ python -m repo_ledger --help、pyproject.toml 解析及 git diff --check 通过�
 验证：repo-ledger check --json 在该仓库 PASS（0 问题、9 条已声明抑制、扫描 2799 个文件）；其旧守卫 scripts/check_entity_registry.py --check 仍为 0 error(s)；.ai/sync_config.json 新增 extra_check 后 python .ai/scripts/sync_verify.py 全绿（13/13，其中 RepoLedger 检查 rc=0）。字体仓库的改动留在工作区，未提交、未推送。
 
 本轮同时把 repo-ledger 以 pip install -e 装到本机（Python 3.14），因此 sync_verify 可以直接调用 repo-ledger 命令；此前“未完成安装验证”的限制至此解除。
+
+## 目录页（repo-ledger index）一轮
+
+日期：2026-09-25（UTC）。环境：Linux，Python 3.11.15，pytest 8.3.5。分支 `feat/type-index-pages`，基线 `a0ee9a0`。
+
+- 改动前全套 `python -m pytest -q`：135 passed。
+- 测试先行：`tests/test_index.py` 与 `tests/test_index_check.py` 在任何实现之前写成并运行，红分别为 39 failed 与 9 failed。生成器落地后、check 集成之前，`tests/test_index_check.py` 为 6 failed, 3 passed；通过的 3 个用例守护“未开启时行为不变”。
+- 绿：`tests/test_index.py` 39 passed，`tests/test_index_check.py` 9 passed；全套 183 passed。
+
+覆盖：单层类型、三层树、超过第六级转嵌套列表、跨类型 parent 在两页的呈现、supersedes 双向、计划位置与 ID 数字排序、路径链接与提交哈希、Unicode 名称、空类型页、总览计数、两次运行逐字节相同且与项目位置无关、`--out` 与 `[index] out_dir` 的优先级、`--check` 的新鲜、过期、缺失与多余、手改页面、写入既不删除也不覆盖非生成文件、note 与 description 中的 ID 补全名、转义、legacy 行内代码、`[index]` 配置校验、关系错误拒绝生成、拒绝账本所在目录、check 集成的开与关、check-legacy 与 lint_all 使用同一排除范围、无法再生成时检查不完整。
+
+真实账本只读试生成：用 `git archive HEAD | tar -x` 把 font-repertoire-expansion 在 `c85f8eb1` 的树导出到临时目录（导出副本不是 Git 仓库），运行 `python -m repo_ledger index --root <副本> --out <副本>/.ai/state/index`。账本为项目 owner 十列布局，317 个实体、11 种类型；生成 12 页，共 104,988 字节（TASK.md 最大，24,711 字节），耗时约 0.13 秒；第二次运行 12 页全部未变，`--check` 通过。TASK 页的三层示例：TASK-24 建先验 → TASK-33 预训练 ×2 → TASK-46 渲染图改走上传与无产出宽限自删。
+
+独立核对：在隔离的临时虚拟环境中用 markdown-it-py 4.2.0（CommonMark 加表格）渲染全部页面。317 个实体每个恰好出现一次；每个标题和列表项的渲染文字都等于“ID + 登记名称”；339 个链接全部指向副本中存在的文件；原文和渲染文本中都没有缺少全名的已登记 ID。
+
+生成器处理的账本特点：11 条 note 中有 29 处已登记 ID 后面没有全名，生成时已补上；21 组同作用域 order 并列（GATE 类型 18 组、RULE 类型 3 组，计划位置按来源文档各自从 1 编号），按 ID 数字排序后在 GATE 页交错排列；2 条 note 因转义改变了原文字节（一个不在词内的下划线、一个美元符）；5 条 supersedes 两个方向都已写出；188 个 legacy 别名写成行内代码。本账本没有跨类型 parent，也没有提交哈希形式的 owner，这两种情形只由测试覆盖。
+
+未验证：Windows 与 macOS、GitHub 网页上的实际渲染、项目自身守卫对生成页的反应。该项目的退役代号守卫只屏蔽账本自身的 legacy 列，也不跳过行内代码，若把目录页提交进该仓库，预计会报告页面上的 legacy 别名。试生成没有写入原仓库。

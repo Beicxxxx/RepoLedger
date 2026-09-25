@@ -14,6 +14,8 @@ RepoLedger 管理实体身份、状态、关系与锚点；cross-harness-sync �
 
 需在项目根目录运行并确保 CLI 在 PATH。此检查是工作树反馈，不是暂存区或 CI 合并检查。未采用 RepoLedger 的项目不添加此项，sync 独立使用不受影响。
 
+若项目在 ledger.toml 中声明 `[index]` 且 `check = true`，同一个检查项也会把缺失或过期的目录页报为 ERR_INDEX_STALE；账本变更后运行 `repo-ledger index` 重新生成，并与账本改动一起提交。无需为此另加检查项。
+
 ## 双 Agent 接力（按需上下文）
 
 Agent A：

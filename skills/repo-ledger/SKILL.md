@@ -1,6 +1,6 @@
 ---
 name: repo-ledger
-description: Query, search, update, allocate, and diagnose RepoLedger entities using ledger.toml.
+description: Query, search, update, allocate, index, and diagnose RepoLedger entities using ledger.toml.
 ---
 
 # RepoLedger
@@ -14,5 +14,6 @@ Follow `AGENTS.md` and the CLI configuration; let the CLI enforce schema, status
 4. Update only an existing current ID, after exact lookup and explicit evidence: `repo-ledger update "<current-ID>" --status "<status>" --note "<evidence>" --expected-status "<old-status>" --json`. Preserve identity, order, relations, and legacy history. `--expected-status` is an optional stale-write check; status transitions are not otherwise enforced. Run `repo-ledger check --json` after any scanned-document write as well as any entity update; it aggregates the legacy guard. Run `repo-ledger check-legacy --json` directly when importing or reviewing frozen text.
 5. Allocate genuinely new entities with `repo-ledger allocate <TYPE> "<title>" --anchor <tracked-file>`. Use the returned ID; never predict one. A `--legacy` value records only a documented pre-existing alias and is never a new spelling to write. Drafts, task briefs, and reviews do not mint IDs. Mint only in the designated main workspace; the short lock protects one local allocation, not cross-clone uniqueness.
 6. On failure, inspect the reported location. Do not fabricate registration, use a shape regex for retired codes, or widen ignores/exemptions to make checks pass. Read one entity and its anchor as needed rather than preloading the registry. `check` is working-tree validation only; staged, commit-tree, incremental, and historical-anchor views remain unsupported.
+7. Per-type index pages are generated, never hand-edited: `repo-ledger index` writes `README.md` plus one `<TYPE>.md` per declared type into `--out DIR` or the `[index] out_dir` of `ledger.toml`, and `repo-ledger index --check --json` compares them byte for byte without writing. When the project declares `[index]`, regenerate the pages in the same change as any registry edit (allocate or update) and commit them together. With `[index] check = true`, `repo-ledger check` reports missing, stale or unexpected pages as `ERR_INDEX_STALE`; fix missing or stale pages by regenerating, never by editing a page. index never deletes: an unexpected page is either left over from a removed type or a file that belongs elsewhere, so delete or move it deliberately. The pages are for human browsing; use `lookup` for entity data.
 
 cross-harness-sync is optional and independently installed. RepoLedger does not manage git pull/push, handoff documents, approval roles or session-wide writer policies.
