@@ -628,6 +628,59 @@ def test_former_names_are_opt_in_for_the_matcher(naming):
     assert hits == []
 
 
+# Review of the naming guards (2026-09-26), defect 4: in a shallow clone the ratchet
+# compared with the earliest fetched version and reported "verified" for a grown baseline.
+def grown_baseline(repo, capsys):
+    configure(repo)
+    write(repo, "log/2026.md", "TASK-1 旧写法\n")
+    write(repo, "NAMING_BASELINE.tsv", emit(capsys))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "baseline")
+    write(repo, "log/2026.md", "TASK-1 旧写法\nTASK-2 新写的一行\n")
+    write(repo, "NAMING_BASELINE.tsv", emit(capsys))   # the forbidden growth
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "grow the baseline")
+
+
+def shallow_clone(repo, target):
+    subprocess.run(["git", "clone", "-q", "--depth", "1", repo.as_uri(), str(target)],
+                   check=True, capture_output=True)
+    git(target, "config", "core.autocrlf", "false")
+    assert git(target, "rev-parse", "--is-shallow-repository").strip() == "true"
+
+
+def test_shallow_clone_never_claims_a_verified_ratchet(repo, tmp_path, capsys, monkeypatch):
+    grown_baseline(repo, capsys)
+    clone = tmp_path / "shallow"
+    shallow_clone(repo, clone)
+    monkeypatch.chdir(clone)
+    rc, report = run_json(capsys, ["check", "--json"])
+    assert rc == 3 and report["complete"] is False
+    assert report["scope"]["naming_guard"]["baseline"]["ratchet"]["status"] == "unverified: shallow clone"
+    shallow = [issue for issue in report["issues"] if issue["code"] == "ERR_NAMING_HISTORY_SHALLOW"]
+    assert len(shallow) == 1 and "git fetch --unshallow" in shallow[0]["suggestion"]
+    # The instruction works: with the full history the growth is visible and verified.
+    git(clone, "fetch", "-q", "--unshallow")
+    rc, report = run_json(capsys, ["check", "--json"])
+    assert rc == 1 and issue_codes(report) == ["ERR_NAMING_BASELINE_GROWTH"]
+    assert report["scope"]["naming_guard"]["baseline"]["ratchet"]["status"] == "verified"
+
+
+def test_shallow_clone_refuses_to_emit_a_baseline(repo, tmp_path, capsys, monkeypatch):
+    configure(repo)
+    write(repo, "log/2026.md", "TASK-1 预训练 ×2\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "registry and log")
+    clone = tmp_path / "shallow"
+    shallow_clone(repo, clone)
+    monkeypatch.chdir(clone)
+    capsys.readouterr()
+    assert main(["check-naming", "--emit-baseline"]) == 3
+    assert "git fetch --unshallow" in capsys.readouterr().err
+    git(clone, "fetch", "-q", "--unshallow")
+    assert main(["check-naming", "--emit-baseline"]) == 0
+
+
 def test_uncommitted_baseline_is_reported_as_unverified(repo, capsys):
     configure(repo)
     write(repo, "log/2026.md", "TASK-1 旧写法\n")

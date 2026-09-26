@@ -86,6 +86,12 @@ multiset of ``(check, line_sha256)`` may never exceed the first committed
 version of the baseline written under the current rules version (red), so the
 baseline can shrink but never grow -- deleting and re-adding it does not reset
 the ratchet, while moving a historical file keeps its rows.
+
+The ratchet and the former names read Git history.  In a shallow clone neither
+can be verified: ``check`` reports ``ERR_NAMING_HISTORY_SHALLOW`` (incomplete,
+exit 3; ratchet status ``unverified: shallow clone``; growth against the earliest
+fetched version is still reported) and ``--emit-baseline`` refuses.  The fix is
+``git fetch --unshallow``; set-up scripts for shallow checkouts run it first.
 """
 from collections import Counter
 from dataclasses import dataclass
@@ -171,6 +177,8 @@ BLIND_SPOTS = [
     "Letter names (附录 B, 附表 A, 缺陷 A) and bare 2a without a section marker are not "
     "reported; see the rule list in repo_ledger/naming.py.",
     "HTML comments, link destinations and indented code blocks are scanned as prose.",
+    "Former names come from the committed history of the registry file only; a rename made "
+    "and undone inside one uncommitted change leaves no trace.",
 ]
 
 
@@ -410,6 +418,22 @@ def _has_head(root):
     except LedgerError:
         return False
     return True
+
+
+def _is_shallow(root):
+    try:
+        return git(root, "rev-parse", "--is-shallow-repository").strip() == "true"
+    except LedgerError:
+        return False
+
+
+def _shallow_issue(location):
+    return Issue(
+        "ERR_NAMING_HISTORY_SHALLOW", location, "",
+        "Shallow clone: the first committed naming baseline and the registry's former names may lie "
+        "outside the fetched history, so the ratchet and renamed entities cannot be verified",
+        "Fetch the full history with git fetch --unshallow and rerun; set-up scripts for shallow "
+        "checkouts (cloud sessions) should run it before any check.", "incomplete")
 
 
 def _blobs(root, specs):
@@ -670,11 +694,17 @@ def _collect(root, registry, force=False):
                      "suppressed": {"full_name": 0, "letter_label": 0}, "suppressed_by_file": {},
                      "stale_rows": 0, "scope_errors": 0, "ratchet": {"status": "no baseline"}},
         "excluded": [],
+        "history": {"shallow": False},
         "blind_spots": list(BLIND_SPOTS),
     }
     hits, issues = [], []
     if audit["status"] == "disabled":
         return hits, issues, audit
+    # The ratchet and the former names both read Git history; a shallow clone hides part of
+    # it, so neither may be claimed as checked there (exit 3, never a quiet pass).
+    if (baseline.path or (full_on and baseline.history_globs)) and _is_shallow(root):
+        audit["history"]["shallow"] = True
+        issues.append(_shallow_issue(f"{baseline.path or cfg.registry_path}:1:1"))
     names = {row.id: row.name for row in registry.rows}
     pattern = _id_pattern(cfg.types, full.display_prefixes)
     former = {}
@@ -807,6 +837,10 @@ def scan_naming(root, registry):
             ratchet, growth = {"status": "unavailable", "reason": exc.issue.reason}, [Issue(
                 "ERR_NAMING_BASELINE_HISTORY", f"{baseline.path}:1:1", "", exc.issue.reason,
                 "Run in a Git checkout with the baseline history available.", "incomplete")]
+        if audit["history"]["shallow"] and ratchet.get("status") == "verified":
+            # Growth against the earliest fetched version is still real and still reported, but
+            # the first committed version may be older than the fetched history.
+            ratchet["status"] = "unverified: shallow clone"
         base_audit["ratchet"] = ratchet
         issues.extend(growth)
     return issues, audit
@@ -816,11 +850,14 @@ def emit_baseline(root, registry):
     """Baseline text for today's violations in historical files (printed, never written).
 
     Both guards are evaluated even while switched off: a project prepares and commits its
-    baseline before it switches the guards on."""
+    baseline before it switches the guards on.  A shallow clone is refused (exit 3): without
+    the full history the registry's former names are incomplete and rows would be too many."""
     hits, issues, _audit = _collect(root, registry, force=True)
     if issues:
         issue = issues[0]
-        raise LedgerError(issue.code, issue.reason, issue.location, category=issue.category)
+        error = LedgerError(issue.code, issue.reason, issue.location, category=issue.category)
+        error.issue.suggestion = issue.suggestion
+        raise error
     baseline = registry.config.naming_baseline
     counts = Counter((check, rel, sha) for check, rel, sha, _hit in hits if _baselineable(rel, baseline))
     lines = [BASELINE_HEADER, BASELINE_COLUMNS]
