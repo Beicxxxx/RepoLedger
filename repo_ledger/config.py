@@ -103,6 +103,8 @@ class LedgerConfig:
     full_name_guard: FullNameGuardConfig = field(default_factory=FullNameGuardConfig)
     letter_label_guard: LetterLabelGuardConfig = field(default_factory=LetterLabelGuardConfig)
     naming_baseline: NamingBaselineConfig = field(default_factory=NamingBaselineConfig)
+    # True when ledger.toml has any naming table; check adds its naming audit only then.
+    naming_configured: bool = False
     types: dict = field(default_factory=dict)
 
     @classmethod
@@ -280,6 +282,8 @@ def _load_naming_guards(cfg, data, fail):
         else:
             setattr(baseline, key, globs("naming_baseline", key, value))
     cfg.naming_baseline = baseline
+    cfg.naming_configured = any(name in data for name in ("full_name_guard", "letter_label_guard",
+                                                          "naming_baseline"))
 
 def find_config_file(start_dir=None):
     current = (start_dir or Path.cwd()).resolve()

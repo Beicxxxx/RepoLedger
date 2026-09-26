@@ -266,7 +266,9 @@ def main(argv=None):
                 issues += index_issues
             naming_issues, naming_audit = scan_naming(root, registry)
             issues += naming_issues
-            audit["naming_guard"] = naming_audit
+            if cfg.naming_configured:
+                # Added only when ledger.toml has a naming table; every existing field is unchanged.
+                audit["naming_guard"] = naming_audit
             result = {"status": "FAIL" if issues else "PASS", "entities_count": len(registry.rows),
                       "complete": not any(i.category == "incomplete" for i in issues),
                       "scope": audit, "issues": aggregate(issues)}

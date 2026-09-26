@@ -381,10 +381,13 @@ def repo(tmp_path, monkeypatch, capsys):
 
 
 def test_guards_are_off_by_default(repo, capsys):
+    # A project without any naming table sees no change in check's report (the convention the
+    # [index] table follows); configured but switched-off guards report "disabled" (see
+    # test_emit_baseline_evaluates_guards_that_are_still_switched_off).
     write(repo, "STATUS.md", "现在：TASK-1 已完成，见 §2a\n")
     rc, report = run_json(capsys, ["check", "--json"])
     assert rc == 0
-    assert report["scope"]["naming_guard"]["status"] == "disabled"
+    assert "naming_guard" not in report["scope"]
 
 
 def test_live_file_violations_are_red(repo, capsys):
