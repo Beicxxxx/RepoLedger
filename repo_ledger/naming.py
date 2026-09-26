@@ -31,6 +31,16 @@ starts with a lowercase letter and holds lowercase letters, digits and single
 hyphens, the date is eight digits shaped like a calendar date, and no letter,
 digit, ``_`` or ``-`` follows.  Anything else glued to an ID is checked.
 
+Renames.  In historical files (baseline ``history_globs`` minus ``live_globs``)
+the adjacent name may also be one the entity carried in any committed version
+of the registry file (``git log --follow`` of the registry path), so renaming an
+entity never turns a line that was compliant when written red, and no baseline
+row is needed for it.  This is deliberately looser than "the name in force when
+the line was written" (no per-line blame); it admits only names that were once
+the registered full name.  Live files, the rest of the scope and chat replies
+need the current name.  A baselined line that a rename makes compliant leaves a
+stale row: delete it (the baseline shrinks).
+
 Letter-label guard (``[letter_label_guard]``).  Ordinals carry digits only; a
 dotted number (``§2.1``) is the way to express levels.  Reported shapes:
 
@@ -82,10 +92,12 @@ from dataclasses import dataclass
 import fnmatch
 import hashlib
 import re
+import subprocess
 
 from .config import relative_path
 from .errors import Issue, LedgerError
 from .git import git, inventory, safe_file
+from .registry import ID_RE, LAYOUTS, _split_row_cells
 
 NAMING_RULES_VERSION = 1
 BASELINE_HEADER = f"# repo-ledger naming baseline; rules={NAMING_RULES_VERSION}"
@@ -346,10 +358,12 @@ def _id_pattern(types, display_prefixes):
                       + RUN_ID_TAIL + ")")
 
 
-def _full_name_hits(lines, masked, names, pattern, display_prefixes):
+def _full_name_hits(lines, masked, names, pattern, display_prefixes, former_names=None):
+    """former_names (entity -> names it carried earlier) is passed for historical text only."""
     hits = []
     if pattern is None:
         return hits
+    former_names = former_names or {}
     for number, (raw, text) in enumerate(zip(lines, masked), 1):
         for match in pattern.finditer(text):
             if match.group("canon"):
@@ -360,7 +374,11 @@ def _full_name_hits(lines, masked, names, pattern, display_prefixes):
             if not name:
                 continue
             token = match.group(0)
-            variants = [name] + ([name.replace("|", "\\|")] if "|" in name else [])
+            variants = []
+            for accepted in (name, *former_names.get(entity, ())):
+                variants.append(accepted)
+                if "|" in accepted:
+                    variants.append(accepted.replace("|", "\\|"))
             start, end = match.span()
             if (_name_after(raw[end:], variants) or _name_before(raw[:start], variants)
                     or _table_adjacent(raw, start, end, token, variants)):
@@ -369,11 +387,107 @@ def _full_name_hits(lines, masked, names, pattern, display_prefixes):
     return hits
 
 
-def find_missing_full_names(lines, names, types, display_prefixes=None):
-    """Mentions of registered entities that are not adjacent to their full name."""
+def find_missing_full_names(lines, names, types, display_prefixes=None, former_names=None):
+    """Mentions of registered entities that are not adjacent to their full name.
+
+    Only the current name counts unless former_names is given; repository checks pass the
+    registry's former names for historical files only, and the chat hook never does."""
     lines = list(lines)
     prefixes = dict(display_prefixes or {})
-    return _full_name_hits(lines, mask_markdown(lines), names, _id_pattern(types, prefixes), prefixes)
+    return _full_name_hits(lines, mask_markdown(lines), names, _id_pattern(types, prefixes), prefixes,
+                           former_names)
+
+
+# --------------------------------------------------------------------------- former names
+
+_COMMIT_LINE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+_BATCH_HEADER = re.compile(rb"([0-9a-f]{40}(?:[0-9a-f]{24})?) ([a-z]+) ([0-9]+)")
+
+
+def _has_head(root):
+    try:
+        git(root, "rev-parse", "--verify", "--quiet", "HEAD")
+    except LedgerError:
+        return False
+    return True
+
+
+def _blobs(root, specs):
+    """UTF-8 texts of the given <commit>:<path> objects in one git cat-file --batch call."""
+    if not specs:
+        return []
+    result = subprocess.run(["git", "-C", str(root), "cat-file", "--batch"],
+                            input=("\n".join(specs) + "\n").encode("utf-8"), capture_output=True)
+    if result.returncode:
+        raise LedgerError("ERR_GIT", result.stderr.decode("utf-8", "replace").strip(),
+                          f"{root}:1:1", category="incomplete")
+    data, pos, texts = result.stdout, 0, []
+    while pos < len(data):
+        end = data.index(b"\n", pos)
+        header = _BATCH_HEADER.fullmatch(data[pos:end])
+        pos = end + 1
+        if header is None:
+            continue  # "<object> missing": nothing follows
+        size = int(header.group(3))
+        body = data[pos:pos + size]
+        pos += size + 1
+        if header.group(2) == b"blob":
+            try:
+                texts.append(body.decode("utf-8"))
+            except UnicodeDecodeError:
+                continue
+    return texts
+
+
+def _registry_names(text):
+    """(id, name) pairs of one registry version; rows that do not parse contribute nothing."""
+    fields, pairs = None, []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith("|"):
+            continue
+        try:
+            cells = _split_row_cells(line)
+        except LedgerError:
+            continue
+        if fields is None:
+            fields = LAYOUTS.get(tuple(cells))
+            continue
+        if len(cells) != len(fields):
+            continue
+        row = dict(zip(fields, cells))
+        if ID_RE.fullmatch(row["id"]) and row["name"]:
+            pairs.append((row["id"], row["name"]))
+    return pairs
+
+
+def former_names(root, registry_path, current):
+    """Names each entity carried in committed versions of the registry, other than today's.
+
+    Every committed version of the registry file (git log --follow, so a moved registry keeps
+    its history) is read with its own header; a registered ID therefore keeps every name it
+    was ever registered under.  Only historical text may use them: a line written before a
+    rename stays compliant, while live files and chat replies need the current name."""
+    if not _has_head(root):
+        return {}
+    log = git(root, "-c", "core.quotePath=false", "log", "--follow", "--format=%H", "--name-only",
+              "--", registry_path)
+    specs, commit = [], None
+    for line in log.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if _COMMIT_LINE.fullmatch(line):
+            commit = line
+        elif commit:
+            specs.append(f"{commit}:{line}")
+            commit = None
+    names = {}
+    for text in _blobs(root, specs):
+        for entity, name in _registry_names(text):
+            if entity in current and name != current[entity]:
+                names.setdefault(entity, set()).add(name)
+    return {entity: sorted(values) for entity, values in sorted(names.items())}
 
 
 # --------------------------------------------------------------------------- letter labels
@@ -543,7 +657,11 @@ def _collect(root, registry, force=False):
         "full_name_guard": {"enabled": full.enabled, "scope_globs": list(full.scope_globs),
                             "exclude_globs": list(full.exclude_globs),
                             "display_prefixes": dict(full.display_prefixes), "scanned": [],
-                            "hits": 0, "reported": 0},
+                            "hits": 0, "reported": 0,
+                            "former_names": {"source": f"committed history of {cfg.registry_path}",
+                                             "applies_to": "historical files (history_globs "
+                                                           "minus live_globs)",
+                                             "entities": 0, "names": 0}},
         "letter_label_guard": {"enabled": labels.enabled, "scope_globs": list(labels.scope_globs),
                                "exclude_globs": list(labels.exclude_globs), "scanned": [],
                                "hits": 0, "reported": 0},
@@ -559,6 +677,17 @@ def _collect(root, registry, force=False):
         return hits, issues, audit
     names = {row.id: row.name for row in registry.rows}
     pattern = _id_pattern(cfg.types, full.display_prefixes)
+    former = {}
+    if full_on and baseline.history_globs:
+        try:
+            former = former_names(root, cfg.registry_path, names)
+        except LedgerError as exc:
+            issues.append(Issue(
+                "ERR_NAMING_REGISTRY_HISTORY", f"{cfg.registry_path}:1:1", "", exc.issue.reason,
+                "Run in a Git checkout with the registry history available; without it a renamed "
+                "entity's historical lines cannot be checked.", "incomplete"))
+        audit["full_name_guard"]["former_names"].update(
+            entities=len(former), names=sum(len(values) for values in former.values()))
     tracked, new, _ = inventory(root)
     for rel in sorted(tracked | new):
         in_full = full_on and _matches(rel, full.scope_globs) and not _matches(rel, full.exclude_globs)
@@ -585,7 +714,8 @@ def _collect(root, registry, force=False):
         masked = mask_markdown(lines)
         if in_full:
             audit["full_name_guard"]["scanned"].append(rel)
-            for hit in _full_name_hits(lines, masked, names, pattern, full.display_prefixes):
+            historical = former if _baselineable(rel, baseline) else None
+            for hit in _full_name_hits(lines, masked, names, pattern, full.display_prefixes, historical):
                 hits.append(("full_name", rel, line_digest(lines[hit.line - 1]), hit))
         if in_labels:
             audit["letter_label_guard"]["scanned"].append(rel)

@@ -541,6 +541,93 @@ def test_moving_a_historical_file_keeps_its_rows(repo, capsys):
     assert rc == 0, report["issues"]
 
 
+# Review of the naming guards (2026-09-26), defect 3: a registry rename turned compliant
+# historical lines red, and re-emitting the baseline to absorb them was growth.
+def rename(repo, old, new):
+    registry = repo / ".ledger" / "ENTITY_REGISTRY.md"
+    text = registry.read_text(encoding="utf-8")
+    assert f"| {old} |" in text
+    registry.write_text(text.replace(f"| {old} |", f"| {new} |"), encoding="utf-8", newline="\n")
+
+
+def test_rename_keeps_compliant_historical_lines_green(repo, capsys):
+    configure(repo)
+    write(repo, "log/2026.md", "- 2026-09-26 TASK-1 预训练 ×2 已开跑\n- 预训练 ×2（TASK-1）\n"
+                               "| TASK-1 | 预训练 ×2 |\n")
+    write(repo, "NAMING_BASELINE.tsv", emit(capsys))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "baseline")
+    rename(repo, "预训练 ×2", "跨字体预训练 ×2")
+    git(repo, "commit", "-qam", "rename TASK-1")
+    write(repo, "NAMING_BASELINE.tsv", emit(capsys))   # re-emitting must not grow
+    rc, report = run_json(capsys, ["check", "--json"])
+    assert rc == 0, report["issues"]
+    audit = report["scope"]["naming_guard"]
+    assert audit["baseline"]["rows"] == 0
+    assert audit["full_name_guard"]["former_names"]["entities"] == 1
+
+
+def test_rename_in_the_worktree_only_keeps_the_committed_name(repo, capsys):
+    configure(repo)
+    write(repo, "log/2026.md", "TASK-1 预训练 ×2 已开跑\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "registry and log")
+    rename(repo, "预训练 ×2", "跨字体预训练 ×2")        # not committed yet
+    rc, report = run_json(capsys, ["check-naming", "--json"])
+    assert rc == 0, report["issues"]
+
+
+def test_rename_requires_the_current_name_in_live_files(repo, capsys):
+    configure(repo)
+    write(repo, "STATUS.md", "现在：TASK-1 预训练 ×2 已开跑\n")
+    write(repo, "log/current.md", "TASK-1 预训练 ×2\n")   # live file inside a history directory
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "status")
+    rename(repo, "预训练 ×2", "跨字体预训练 ×2")
+    git(repo, "commit", "-qam", "rename TASK-1")
+    rc, report = run_json(capsys, ["check-naming", "--json"])
+    assert rc == 1
+    locations = sorted(loc for issue in report["issues"] for loc in issue["locations"])
+    assert locations == ["STATUS.md:1:4", "log/current.md:1:1"]
+    assert "TASK-1 跨字体预训练 ×2" in report["issues"][0]["reason"]
+
+
+def test_rename_never_accepts_a_name_that_was_not_registered(repo, capsys):
+    configure(repo)
+    write(repo, "log/2026.md", "TASK-1 预训练 ×2\n")
+    write(repo, "NAMING_BASELINE.tsv", emit(capsys))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "baseline")
+    rename(repo, "预训练 ×2", "跨字体预训练 ×2")
+    git(repo, "commit", "-qam", "rename TASK-1")
+    write(repo, "log/2026.md", "TASK-1 预训练 ×2\nTASK-1 预训练 新写的简称\n")
+    rc, report = run_json(capsys, ["check-naming", "--json"])
+    assert rc == 1
+    assert [loc for issue in report["issues"] for loc in issue["locations"]] == ["log/2026.md:2:1"]
+
+
+def test_rename_that_fixes_a_baselined_line_leaves_a_stale_row_to_delete(repo, capsys):
+    configure(repo)
+    write(repo, "log/2026.md", "TASK-1 跨字体预训练 ×2 写在改名之前\n")
+    write(repo, "NAMING_BASELINE.tsv", emit(capsys))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "baseline with one row")
+    rename(repo, "预训练 ×2", "跨字体预训练 ×2")
+    git(repo, "commit", "-qam", "rename TASK-1")
+    rc, report = run_json(capsys, ["check", "--json"])
+    assert rc == 1 and issue_codes(report) == ["ERR_NAMING_BASELINE_STALE"]
+    write(repo, "NAMING_BASELINE.tsv", emit(capsys))   # the row goes: a shrink
+    rc, report = run_json(capsys, ["check", "--json"])
+    assert rc == 0, report["issues"]
+
+
+def test_former_names_are_opt_in_for_the_matcher(naming):
+    assert bare(naming, "TASK-1 旧名") == [(1, 1, "TASK-1")]
+    hits = naming.find_missing_full_names(["TASK-1 旧名", "旧名（TASK-1）"], NAMES, TYPES, {},
+                                          former_names={"TASK-1": ["旧名"]})
+    assert hits == []
+
+
 def test_uncommitted_baseline_is_reported_as_unverified(repo, capsys):
     configure(repo)
     write(repo, "log/2026.md", "TASK-1 旧写法\n")
