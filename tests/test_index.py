@@ -637,6 +637,21 @@ def test_notes_follow_every_registered_id_with_its_full_name(tmp_path, capsys):
         "note: blocked by TASK-1 Alpha plan; see TASK-1 Alpha plan and ISSUE-1 Crash on start/TASK-99")
 
 
+def test_note_ids_in_paths_urls_and_backticks_are_left_as_written(tmp_path, capsys):
+    note = ("see docs/TASK-1.md, TASK-2.json, data/TASK-1/raw, https://example.com/TASK-2 and `TASK-1` "
+            "or ``TASK-2 x``; but TASK-1/TASK-2, ISSUE-1/TASK-2, (TASK-2) and TASK-1.")
+    rows = [row("TASK-1", "Alpha plan"), row("TASK-2", "Beta plan"), row("TASK-3", "Notes", note=note),
+            row("ISSUE-1", "Crash on start")]
+    page = text(generate(capsys, make_project(tmp_path / "p", rows)) / "TASK.md")
+
+    # A name inserted into a path, a URL or code would change it, so those IDs stay as written;
+    # IDs joined by "/" into a list of IDs are prose and are still followed by their names.
+    assert fields_of(page, "TASK-3").endswith(
+        "note: see docs/TASK-1.md, TASK-2.json, data/TASK-1/raw, <https://example.com/TASK-2> and \\`TASK-1\\` "
+        "or \\`\\`TASK-2 x\\`\\`; but TASK-1 Alpha plan/TASK-2 Beta plan, ISSUE-1 Crash on start/TASK-2 Beta plan, "
+        "(TASK-2 Beta plan) and TASK-1 Alpha plan.")
+
+
 def test_type_description_mentions_are_followed_by_full_names(tmp_path, capsys):
     root = make_project(tmp_path / "p", [row("TASK-1", "Alpha plan")])
     config = root / "ledger.toml"

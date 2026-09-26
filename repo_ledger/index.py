@@ -30,6 +30,11 @@ _URL_RE = re.compile(r"(?i:https?|ftp)://[^\s<>]+|www\.[^\s<>]+")
 # (markdown-it decodes them) or a character reference (cmark decodes it).
 _AUTOLINK_TEXT_CHANGES_RE = re.compile(r"%[0-9A-Fa-f]{2}|(?i:xn--)")
 _ASCII_PUNCTUATION = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+# Free-text IDs that are part of a path, a URL or backticked code are not annotated.
+_PATH_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._~%+-/")
+_ID_SEGMENT_RE = re.compile(r"[A-Z][A-Z_]*-[0-9]+")
+_EXTENSION_RE = re.compile(r"\.(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]+")
+_BACKTICKS_RE = re.compile(r"`+")
 # Percent-encoded in link targets; & too, because destinations decode character references.
 _UNSAFE_IN_LINK = frozenset(" \"%&#'()<>?[\\]^`{|}")
 _REGENERATE = ("Run repo-ledger index to regenerate the pages, then review and commit them; until a page "
@@ -94,6 +99,38 @@ def markdown_text(value, *, table=False):
             escape = False
         out.append("\\" + char if escape else char)
     return "".join(out)
+
+
+def _backticked(value):
+    """(start, end) of the text inside matched backtick runs of equal length, as in code spans."""
+    runs = [(match.start(), match.end()) for match in _BACKTICKS_RE.finditer(value)]
+    spans, index = [], 0
+    while index < len(runs):
+        start, end = runs[index]
+        closer = next((later for later in range(index + 1, len(runs))
+                       if runs[later][1] - runs[later][0] == end - start), None)
+        if closer is not None:
+            spans.append((end, runs[closer][0]))
+            index = closer
+        index += 1
+    return spans
+
+
+def _in_path(value, start, end):
+    """True when the ID at value[start:end] is part of a path or URL rather than prose.
+
+    It is when a file extension follows it (docs/X-1.md), or when the "/" before it starts a
+    path: some segment of the slash-joined run to its left is not ID-shaped (docs/, a URL).
+    IDs joined by "/" into a list of IDs are prose and still count as mentions.
+    """
+    if _EXTENSION_RE.match(value, end):
+        return True
+    if not start or value[start - 1] != "/":
+        return False
+    left = start - 1
+    while left and value[left - 1] in _PATH_CHARACTERS:
+        left -= 1
+    return not all(_ID_SEGMENT_RE.fullmatch(segment) for segment in value[left:start - 1].split("/"))
 
 
 def code_span(value):
@@ -260,11 +297,19 @@ class _Renderer:
         return markdown_text(f"{entity_id} {self.rows[entity_id].name}")
 
     def annotate(self, value):
-        """Follow every registered ID in free text with its full name unless it already is."""
+        """Follow every registered ID in free text with its full name unless it already is.
+
+        IDs inside a path, a URL or backticks are left as written: a name inserted there
+        would change the path or the code.
+        """
         pieces, position = [], 0
+        code = _backticked(value)
         for match in self.mention.finditer(value):
             row = self.rows.get(match.group(0))
             if row is None or value.startswith(" " + row.name, match.end()):
+                continue
+            if _in_path(value, match.start(), match.end()) or any(
+                    start <= match.start() < end for start, end in code):
                 continue
             pieces += [value[position:match.end()], " " + row.name]
             position = match.end()
