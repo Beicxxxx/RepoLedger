@@ -107,6 +107,36 @@ def test_table_cells_must_be_adjacent_id_and_name(naming):
     assert [hit[2] for hit in hits] == ["TASK-1", "TASK-2"]
 
 
+# Review of the naming guards (2026-09-26), defect 6: "_" and "-" counted as word
+# characters, so underscore emphasis and hyphenated words (TASK-1-clean) hid a bare ID.
+@pytest.mark.parametrize("text", [
+    "__TASK-1__ 已开跑",
+    "_TASK-1_ 已开跑",
+    "final TASK-1-clean selection",
+    "post-TASK-1 状态",
+    "见 TASK-1_pool 目录",
+    "TASK-1-review-2026092 缺一位日期",
+    "TASK-1-Review-20260925 技能名大写",
+    "TASK-1-review-20261399 日期不成立",
+    "TASK-1-20260925 没有技能名",
+    "TASK-1-review-20260925_x 后面还连着",
+])
+def test_id_boundary_underscore_and_hyphen_are_checked(naming, text):
+    assert [hit[2] for hit in bare(naming, text)] == ["TASK-1"]
+
+
+@pytest.mark.parametrize("text", [
+    "__TASK-1__ 预训练 ×2",
+    "_TASK-1_ 预训练 ×2",
+    "_预训练 ×2_（TASK-1）",
+    "run id TASK-1-review-20260925 is a machine string",
+    "aris-work/TASK-1-experiment-audit-20260925/ 下的产出",
+    "见 TASK-1-review-v2-20260925.json",
+])
+def test_id_boundary_exact_run_ids_and_emphasis_pass(naming, text):
+    assert bare(naming, text) == []
+
+
 def test_display_prefix_follows_the_same_rule(naming):
     prefixes = {"任务": "TASK"}
     assert bare(naming, "见任务-1 预训练 ×2", prefixes) == []

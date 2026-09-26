@@ -22,6 +22,15 @@ A name ending in an ASCII letter or digit must not run on into another one
 (``字体池清单 v2.2`` does not match ``v2.23``).  IDs that are not registered
 (unknown, zero-padded) belong to the reference check and are skipped here.
 
+What counts as a mention: an ID not glued to an ASCII letter or digit on either
+side.  ``_``, ``-``, ``*`` and non-ASCII text are boundaries, so ``_TASK-33_``,
+``__TASK-33__``, ``RULE-6-clean``, ``post-DATASET-4`` and ``见TASK-33`` are all
+mentions.  The single exemption is an exact machine run id
+``<TYPE-N>-<skill>-<YYYYMMDD>`` (``TASK-33-experiment-audit-20260925``): the skill
+starts with a lowercase letter and holds lowercase letters, digits and single
+hyphens, the date is eight digits shaped like a calendar date, and no letter,
+digit, ``_`` or ``-`` follows.  Anything else glued to an ID is checked.
+
 Letter-label guard (``[letter_label_guard]``).  Ordinals carry digits only; a
 dotted number (``§2.1``) is the way to express levels.  Reported shapes:
 
@@ -316,7 +325,16 @@ def _table_adjacent(line, start, end, token, variants):
     return False
 
 
+# The one hyphenated form that is not a mention: a machine run id <TYPE-N>-<skill>-<YYYYMMDD>
+# (skill = lowercase letter, then lowercase letters, digits and single hyphens; a real
+# calendar-shaped date; nothing word-like glued after it).
+RUN_ID_TAIL = (r"-[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])"
+               r"(?![A-Za-z0-9_\-])")
+
+
 def _id_pattern(types, display_prefixes):
+    """An ID is a mention unless glued to an ASCII letter or digit; "_" and "-" are boundaries
+    (underscore emphasis, RULE-6-clean), except an exact run id (RUN_ID_TAIL)."""
     if not types:
         return None
     canon = "|".join(re.escape(t) for t in sorted(types, key=len, reverse=True))
@@ -324,7 +342,8 @@ def _id_pattern(types, display_prefixes):
     if display_prefixes:
         disp = "|".join(re.escape(p) for p in sorted(display_prefixes, key=len, reverse=True))
         parts.append(rf"(?P<disp>{disp})-(?P<dnum>[0-9]+)")
-    return re.compile(r"(?<![A-Za-z0-9_\-])(?:" + "|".join(parts) + r")(?![A-Za-z0-9_\-])")
+    return re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(parts) + r")(?![A-Za-z0-9])(?!"
+                      + RUN_ID_TAIL + ")")
 
 
 def _full_name_hits(lines, masked, names, pattern, display_prefixes):
