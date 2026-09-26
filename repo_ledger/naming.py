@@ -27,22 +27,28 @@ dotted number (``§2.1``) is the way to express levels.  Reported shapes:
 
   section  ``§2a`` ``§0c`` ``§1a.3`` ``§3A`` ``§B3.3`` ``§B8`` ``§D.3`` ``§A``,
            ``section 2a``, ``第 2a 节``
-  step     ``步骤 2a``, ``阶段 2a``, ``step 3c``, ``Phase 2a``, ``stage 1b``
-           (a number plus one letter a-h)
+  step     ``步骤 2a``, ``阶段 2a``, ``step 3c``, ``Phase 2a``, ``stage 1b``,
+           ``Phase 4A`` (a number plus one letter a-h or A-H)
   heading  ATX heading whose leading label has a letter: ``## 0a.``,
-           ``#### 2a addendum``, ``## A.``, ``## (i)``, ``## Q6.``
+           ``#### 2a addendum``, ``## 2A 标题``, ``## A.``, ``## (i)``, ``## Q6.``
   list     line-start label after optional quote/list markers and emphasis:
-           ``(a)`` ``a.`` ``b)`` ``(ii)`` ``2a.``, and ``3c`` followed by a
-           space (letters a-g only, so ``4h`` for hours stays silent)
-  table    first table cell that is a number plus one letter a-h (``| 2a |``)
-           or a parenthesised letter (``| (a) |``)
+           ``(a)`` ``a.`` ``b)`` ``(ii)`` ``2a.``, and ``3c`` or ``2B`` followed
+           by a space (letters a-g and A-G except D, so ``4h`` for hours and
+           ``3D`` stay silent)
+  table    first table cell that is a number plus one letter a-h or A-H except
+           D (``| 2a |``, ``| 2A |``) or a parenthesised letter (``| (a) |``)
+
+Uppercase suffixes: without a section or step word, ``D`` is not read as a label
+(``2D``, ``3D`` are dimensions); after one (``Phase 4D``) it is.  Other uppercase
+letters count, so a heading, list item or first table cell that starts with a size
+such as ``7B`` is reported -- move the size later in the line.
   inline   mid-line ``(a)``-``(h)``, ``(A)``-``(H)`` or roman ``(i)``-``(x)``
            that is not glued to a preceding letter, digit, ``)``, ``]`` or
            ``X*`` (so ``f(a)`` and ``E*(c)`` stay silent)
 
-Deliberately not reported: letter names such as ``附录 B``, ``附表 A`` or
-``缺陷 A、B`` (several are registered entity names), bare ``2a`` without a
-section marker, English ordinals (``1st``) and units in headings (``3D``).
+Deliberately not reported: letter names such as ``附录 B``, ``附表 A``,
+``缺陷 A、B`` or ``Option 3R`` (several are registered entity names), bare ``2a``
+without a section marker, English ordinals (``1st``) and dimensions (``3D``).
 
 Historical text is carried by a ratchet baseline (``[naming_baseline]``): rows
 ``check, file, line_sha256, count`` cover today's violations in files that match
@@ -75,6 +81,9 @@ OPEN_PARENS = ("(", "（")
 
 _TAIL = r"(?=[\s*_]|$|[^\x00-\x7f])"
 _LETTER_OR_ROMAN = r"(?:[A-Za-z]|[ivxlc]{2,5}|[IVXLC]{2,5})"
+# One label letter after a number where no "section" or "step" word says it is a label:
+# a-h, and A-H except D, because 2D and 3D are dimensions.
+_SUFFIX = r"[a-hA-CE-H]"
 
 SECTION_RES = (
     re.compile(r"§[ \t]?(?:[A-Za-z]+\.?\d+(?:\.\d+)*[A-Za-z]*(?:\.\d+)*"
@@ -83,14 +92,15 @@ SECTION_RES = (
     re.compile(r"(?<![A-Za-z])[Ss]ection[ \t]+\d+(?:\.\d+)*[A-Za-z](?![A-Za-z0-9])"),
     re.compile(r"第[ \t]?\d+(?:\.\d+)*[A-Za-z]+(?:\.\d+)*[ \t]?[节章条款]"),
 )
-STEP_RE = re.compile(r"(?<![A-Za-z])(?:[Ss]tep|[Pp]hase|[Ss]tage|步骤|阶段)[ \t]?\d+(?:\.\d+)*[a-h]"
+# After an explicit step word every letter a-h and A-H is a label (Phase 4A, step 2D).
+STEP_RE = re.compile(r"(?<![A-Za-z])(?:[Ss]tep|[Pp]hase|[Ss]tage|步骤|阶段)[ \t]?\d+(?:\.\d+)*[a-hA-H]"
                      r"(?![A-Za-z0-9])")
 HEADING_START = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(?:\*\*|__|\*|_)?")
 HEADING_LABELS = (
     # 0a.  3A.  5a′.  1a.3)  -- a number with letters, closed by . or )
     re.compile(r"§?[ \t]?\d+(?:\.\d+)*[A-Za-z]+(?:\.\d+)*′?(?=[.)](?:[\s*_]|$|[^\x00-\x7f]))"),
-    # 2a addendum, 0c 更正, 1a.3 xyz -- one lowercase letter a-h, then a boundary
-    re.compile(r"§?[ \t]?\d+(?:\.\d+)*[a-h](?:\.\d+)*′?" + _TAIL),
+    # 2a addendum, 2A 标题, 0c 更正, 1a.3 xyz -- one letter (_SUFFIX), then a boundary
+    re.compile(r"§?[ \t]?\d+(?:\.\d+)*" + _SUFFIX + r"(?:\.\d+)*′?" + _TAIL),
     # Q6.  D4.
     re.compile(r"[A-Za-z]\d+(?:\.\d+)*[.)]" + _TAIL),
     # (i)  (a)
@@ -103,8 +113,8 @@ LIST_LABEL = re.compile(
     r"(?P<label>[(（]" + _LETTER_OR_ROMAN + r"[)）]"
     r"|" + _LETTER_OR_ROMAN + r"[.)]"
     r"|\d+(?:\.\d+)*[A-Za-z][.)]"
-    r"|\d+(?:\.\d+)*[a-g](?=[ \t]))" + _TAIL)
-TABLE_LABEL = re.compile(r"\d+(?:\.\d+)*[a-h]|[(（](?:[A-Za-z]|[ivxlc]{2,5})[)）]")
+    r"|\d+(?:\.\d+)*[a-gA-CE-G](?=[ \t]))" + _TAIL)
+TABLE_LABEL = re.compile(r"\d+(?:\.\d+)*" + _SUFFIX + r"|[(（](?:[A-Za-z]|[ivxlc]{2,5})[)）]")
 INLINE_LABEL = re.compile(
     r"(?<![A-Za-z0-9_)\]])(?<![A-Za-z0-9_]\*)[(（](?:[a-hA-H]|i{1,3}|iv|vi{0,3}|ix|x)[)）]"
     r"(?=[\s*_,.;:/!?]|$|[^\x00-\x7f])")

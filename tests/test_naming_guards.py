@@ -191,6 +191,35 @@ def test_unclosed_fence_masks_to_the_end(naming):
     assert labels(naming, "intro\n```\n§2a\n(b) x") == []
 
 
+# Review of the naming guards (2026-09-26), defect 2: uppercase suffixes were never
+# reported (a project's live file wrote "Phase 4A").
+@pytest.mark.parametrize("text,expected", [
+    ("The plan's Phase 4A line", ("Phase 4A", "step")),
+    ("## Phase 4A: 第二骨干", ("Phase 4A", "step")),
+    ("step 2A of the driver", ("step 2A", "step")),
+    ("按 Phase 4B 的 NEGATIVE 路线", ("Phase 4B", "step")),
+    ("## 2A 标题", ("2A", "heading")),
+    ("| 2A | 第二骨干 |", ("2A", "table")),
+    ("- 2B 候选", ("2B", "list")),
+])
+def test_uppercase_suffix_labels_are_reported(naming, text, expected):
+    assert labels(naming, text) == [(1, *expected)]
+
+
+@pytest.mark.parametrize("text", [
+    "## 3D 渲染管线",                       # dimensions are not labels
+    "| 3D | 支持 |",
+    "- 2D 与 3D 对照",
+    "## 1st round",
+    "RTX 4090、A100、H100、T4 与 L4 报价",   # product names
+    "Qwen2.5-7B 与 Llama-3-8B 不在本项目",
+    "U+767D 与 U+0751C 是码位",
+    "Option 3R 候选提供器",                  # an option name, like 附录 B
+])
+def test_uppercase_suffix_non_violations(naming, text):
+    assert labels(naming, text) == []
+
+
 def test_line_digest_is_stable_and_trailing_space_insensitive(naming):
     digest = naming.line_digest("见 §2a")
     assert len(digest) == 16 and all(ch in "0123456789abcdef" for ch in digest)
