@@ -271,13 +271,14 @@ def scan_legacy(root, registry, generated=frozenset()):
 
 
 def lint_all(root, registry):
-    """Library form of check: invariants, reference scan, retired-code guard, index check."""
+    """Library form of check: invariants, reference scan, retired-code guard, index check, naming guards."""
+    from .naming import scan_naming
     index_issues, generated = [], frozenset()
     if registry.config.index.check:
         from .index import verify_configured_index
         index_issues, _, generated = verify_configured_index(root, registry.config)
     return (check_registry_invariants(registry, root) + scan(root, registry, generated)[0]
-            + scan_legacy(root, registry, generated)[0] + index_issues)
+            + scan_legacy(root, registry, generated)[0] + index_issues + scan_naming(root, registry)[0])
 
 def aggregate(issues):
     groups = {}

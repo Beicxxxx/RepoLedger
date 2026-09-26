@@ -64,6 +64,31 @@ class IndexConfig:
 
 
 @dataclass
+class FullNameGuardConfig:
+    """User-facing prose: every entity mention carries its full registered name."""
+    enabled: bool = False
+    scope_globs: list[str] = field(default_factory=list)
+    exclude_globs: list[str] = field(default_factory=list)
+    display_prefixes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class LetterLabelGuardConfig:
+    """Prose ordinals (sections, headings, list and table labels) carry digits only."""
+    enabled: bool = False
+    scope_globs: list[str] = field(default_factory=lambda: ["*.md", "**/*.md"])
+    exclude_globs: list[str] = field(default_factory=list)
+
+
+@dataclass
+class NamingBaselineConfig:
+    """Ratchet for historical text: rows may only be removed, never added."""
+    path: str = ""
+    history_globs: list[str] = field(default_factory=list)
+    live_globs: list[str] = field(default_factory=list)
+
+
+@dataclass
 class LedgerConfig:
     schema_version: str = "1.0"
     registry_path: str = ".ledger/ENTITY_REGISTRY.md"
@@ -75,6 +100,11 @@ class LedgerConfig:
     reference_exemptions: dict[str, list[str]] = field(default_factory=dict)
     legacy_guard: LegacyGuardConfig = field(default_factory=LegacyGuardConfig)
     index: IndexConfig = field(default_factory=IndexConfig)
+    full_name_guard: FullNameGuardConfig = field(default_factory=FullNameGuardConfig)
+    letter_label_guard: LetterLabelGuardConfig = field(default_factory=LetterLabelGuardConfig)
+    naming_baseline: NamingBaselineConfig = field(default_factory=NamingBaselineConfig)
+    # True when ledger.toml has any naming table; check adds its naming audit only then.
+    naming_configured: bool = False
     types: dict = field(default_factory=dict)
 
     @classmethod
@@ -93,7 +123,8 @@ class LedgerConfig:
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
             fail(str(exc))
-        if set(data) - {"ledger", "types", "legacy_guard", "reference_exemptions", "index"}:
+        if set(data) - {"ledger", "types", "legacy_guard", "reference_exemptions", "index",
+                        "full_name_guard", "letter_label_guard", "naming_baseline"}:
             fail("Unknown top-level configuration field")
         cfg = cls.default()
         section = data.get("ledger", {})
@@ -189,7 +220,70 @@ class LedgerConfig:
                 if spec.get("prefix", name) != name or type(spec.get("require_anchor", True)) is not bool:
                     fail("prefix must equal type name; require_anchor must be boolean")
                 cfg.types[name] = EntityTypeConfig(name, statuses, spec.get("require_anchor", True), spec.get("description", ""))
+        _load_naming_guards(cfg, data, fail)
         return cfg
+
+
+def _load_naming_guards(cfg, data, fail):
+    """Parse the opt-in naming guards after the type vocabulary is known."""
+    def table(name, allowed):
+        value = data.get(name, {})
+        if not isinstance(value, dict):
+            fail(f"{name} must be a table")
+        if set(value) - allowed:
+            fail(f"Unknown {name} field")
+        return value
+
+    def globs(section, key, value):
+        if not isinstance(value, list) or not all(_guard_glob(x) for x in value):
+            fail(f"{section}.{key} must be a string array of safe globs")
+        return list(value)
+
+    section = table("full_name_guard", {"enabled", "scope_globs", "exclude_globs", "display_prefixes"})
+    guard = FullNameGuardConfig()
+    for key, value in section.items():
+        if key == "enabled":
+            if type(value) is not bool:
+                fail("full_name_guard.enabled must be boolean")
+            guard.enabled = value
+        elif key == "display_prefixes":
+            # Display spellings such as 任务-N map to exactly one configured type.
+            if not isinstance(value, dict) or not all(
+                    isinstance(prefix, str) and prefix and prefix == prefix.strip()
+                    and not any(ch.isspace() or ch in "-|" for ch in prefix)
+                    and prefix not in cfg.types
+                    and isinstance(target, str) and target in cfg.types
+                    for prefix, target in value.items()):
+                fail("full_name_guard.display_prefixes must map distinct non-type prefixes "
+                     "to configured types")
+            guard.display_prefixes = dict(value)
+        else:
+            setattr(guard, key, globs("full_name_guard", key, value))
+    cfg.full_name_guard = guard
+
+    section = table("letter_label_guard", {"enabled", "scope_globs", "exclude_globs"})
+    labels = LetterLabelGuardConfig()
+    for key, value in section.items():
+        if key == "enabled":
+            if type(value) is not bool:
+                fail("letter_label_guard.enabled must be boolean")
+            labels.enabled = value
+        else:
+            setattr(labels, key, globs("letter_label_guard", key, value))
+    cfg.letter_label_guard = labels
+
+    section = table("naming_baseline", {"path", "history_globs", "live_globs"})
+    baseline = NamingBaselineConfig()
+    for key, value in section.items():
+        if key == "path":
+            if not isinstance(value, str) or (value and not relative_path(value)):
+                fail("naming_baseline.path must be empty or a safe repository-relative file")
+            baseline.path = value
+        else:
+            setattr(baseline, key, globs("naming_baseline", key, value))
+    cfg.naming_baseline = baseline
+    cfg.naming_configured = any(name in data for name in ("full_name_guard", "letter_label_guard",
+                                                          "naming_baseline"))
 
 def find_config_file(start_dir=None):
     current = (start_dir or Path.cwd()).resolve()

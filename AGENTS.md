@@ -29,6 +29,8 @@ Canonical instructions for all coding harnesses. Keep this file <= 65 lines.
 - Accepted registry layouts are exactly the canonical ten-column, the project owner-layout ten-column, and the legacy nine-column header; never guess an unknown header.
 - independent_order only decouples the render-only plan position; it never lets order carry identity, status or completion.
 - Narrow reference exemptions are declared per file and literal token, and their hits stay visible in the audit.
+- Naming guards are opt-in and aggregated by check: user-facing mentions sit next to the full registered name on the same line; prose ordinals carry digits only.
+- The naming baseline covers historical text only (history_globs minus live_globs), may only shrink against its first committed version, and a stale row fails; never widen it to pass.
 - Stable diagnostic codes with locations and actionable next steps.
 - Worktree, index and commit-tree are different views; reject unsupported views.
 - Allocation only in the authoritative main worktree under its short lock.
