@@ -1,0 +1,24 @@
+# RepoLedger's own registry (DECISION-1): RepoLedger's work is tracked in this repository.
+# README, docs, examples, skills and tests show example IDs that are not references to this
+# registry, so the reference scan reads only the Markdown files outside them.
+[ledger]
+schema_version = "1.0"
+registry_path = ".ledger/ENTITY_REGISTRY.md"
+allow_gaps = true
+code_extensions = [".md"]
+ignore_globs = ["README.md", "docs/**", "examples/**", "skills/**", "tests/**", ".test-runs/**"]
+
+[legacy_guard]
+enabled = false
+
+[types.TASK]
+allowed_statuses = ["BACKLOG", "READY", "IN_PROGRESS", "BLOCKED", "DONE", "DROPPED"]
+require_anchor = true
+
+[types.DECISION]
+allowed_statuses = ["DRAFT", "IN_FORCE", "SUPERSEDED"]
+require_anchor = true
+
+[types.ISSUE]
+allowed_statuses = ["OPEN", "INVESTIGATING", "RESOLVED", "WONT_FIX"]
+require_anchor = true

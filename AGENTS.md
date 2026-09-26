@@ -7,11 +7,12 @@ Canonical instructions for all coding harnesses. Keep this file <= 65 lines.
 - cross-harness-sync is an independent optional partner; do not vendor or modify it.
 - Python 3.11+, standard library first, tomllib, Git-native text storage.
 - No remote creation, publication, global plugin installation or old-project migration without a new request.
+- RepoLedger's own work is registered in `.ledger/ENTITY_REGISTRY.md` (root `ledger.toml`, DECISION-1): a change lands together with its row; a project that uses RepoLedger registers only its adoption.
 
 ## Session start
 1. Inspect git status; preserve unrelated user changes.
 2. Read docs/rfc-architecture.md.
-3. Inspect relevant issues/tests. No remote issue tracker is assumed.
+3. Inspect `.ledger/ENTITY_REGISTRY.md` and the relevant tests. No remote issue tracker is assumed.
 
 ## Invariants
 - TYPE-N: uppercase type, no zero padding, per-type monotonic, append-only.
