@@ -113,6 +113,8 @@ repo-ledger check --json
 | `repo-ledger update TASK-1 --status READY --expected-status BACKLOG --json` | 在短锁内校验并更新状态；可用 `--note` 更新备注 |
 | `repo-ledger check --json` | 只读校验工作树，输出诊断和可审计的扫描范围 |
 | `repo-ledger check-legacy --json` | 单独运行退役代号守卫；`check` 已自动聚合它 |
+| `repo-ledger check-naming --json` | 单独运行全名守卫与字母序号守卫（含历史文字基线）；`check` 已自动聚合它 |
+| `repo-ledger check-naming --emit-baseline` | 打印当前历史文字违规的基线行（只打印，不写文件） |
 | `repo-ledger tree` | 输出简易实体与父关系列表 |
 | `repo-ledger index --out docs/ledger-index` | 为每个已声明类型写一页 Markdown 目录，另写总览页；省略 `--out` 时读 `[index] out_dir` |
 | `repo-ledger index --check` | 在内存中重新生成并与磁盘逐字节比较，列出缺失、过期与多余页面；不写任何文件 |
@@ -176,6 +178,24 @@ string_line_exemptions = {}
 - 工作树扫描包含受控文件及未被 Git 忽略的新文件。`.md` 始终属于适用扩展名；其他扩展名由配置指定。JSON 列出实际扫描与排除项。
 - 退役代号守卫只接受枚举字面量（配置中的 `forbidden_tokens` 加登记表中的 legacy），内部对字面量转义后匹配；它不接受用户提供的“形状正则”。`scope_globs`、`exclude_globs`、整文件豁免、列掩码、教学围栏和定向行豁免都会写入 JSON 审计范围。守卫不是结构化 JSON key 审计，生成或转义的 key 仍需额外检查。
 - `[index]` 可选：`out_dir` 是仓库相对的目录页输出目录；`check = true`（需要 `out_dir`）让 `repo-ledger check` 同时运行目录页新鲜度检查，缺失、过期或多余页面报 `ERR_INDEX_STALE`，定位到 `<out_dir>/<页面>:1:1`。JSON 只新增 `scope.index`（out_dir、registry_sha256、pages、missing、stale、extra），已有字段不变。只有与再生成结果逐字节一致的页面才按精确路径从引用扫描和退役代号守卫中排除，并在 `excluded` 中写明原因 `generated index page verified by the index check`：这些页面的内容就是账本内容，已由逐字节再生成校验，页面上的 legacy 别名因此不会触发守卫。缺失或过期的页面（包括手改、手写的文件和符号链接）不排除，按普通文件扫描：过期页上的 legacy 别名等命中与 `ERR_INDEX_STALE` 一起报告，重新生成后随之消失；符号链接页不被跟随，报扫描不完整。目录中的其他文件照常扫描。`check-legacy` 与 `lint_all` 在 `check = true` 时运行同一比较，使用同一排除范围。无法重新生成（例如关系错误）时报 `ERR_INDEX_UNVERIFIED`，检查不完整（退出码 `3`），不会判为通过，此时页面不被排除、按普通文件扫描。未声明 `[index]` 或 `check` 为 false 时 `check` 行为完全不变，生成页按普通文件扫描（页面上的 legacy 别名会被守卫报告），此时应开启 `check`，或把页面放在扫描范围之外。
+- 命名守卫默认关闭，按项目开启：`[full_name_guard]` 在声明的面向用户文件里要求每个已登记 `TYPE-N`（及 `display_prefixes` 声明的显示层拼写，如 `任务-N`）都在同一行紧邻登记全名——编号后至多一个空格接全名、全名后接以编号开头的括号、或表格里编号与全名占相邻两格；`[letter_label_guard]` 在 Markdown 正文里拦带字母的序号（`§2a` `§B3.3` 类章节指针、`步骤 2a`、标题与行首列表号、表格首列序号、行内 `(a)`）。两者都跳过代码围栏与行内代码。精确规则与取舍见[架构与格式](docs/rfc-architecture.md)。
+- `[naming_baseline]` 为不再改写的历史文字建棘轮基线：`path` 指向一份提交的 TSV（`check, file, line_sha256, count`），`history_globs` 减去 `live_globs` 的文件才能进基线。基线行只抑制同一文件中同一行文本上的违规；条目对不上现存违规即过期（红），活文件条目报范围错（红），而且整份基线按 `(check, line_sha256)` 计数不得多于同一规则版本下第一次提交的版本（红）——只能删行，删掉再重建也不能扩容；历史文件整体改名可以把行改指新路径。`check-naming --emit-baseline` 只打印建表内容，不写文件。
+
+```toml
+[full_name_guard]
+enabled = true
+scope_globs = ["STATUS.md", "docs/reports/*.md"]
+display_prefixes = { "任务" = "TASK" }
+
+[letter_label_guard]
+enabled = true
+scope_globs = ["*.md", "**/*.md"]
+
+[naming_baseline]
+path = ".ledger/NAMING_BASELINE.tsv"
+history_globs = ["docs/archive/**", "CHANGELOG.md"]
+live_globs = []
+```
 
 自定义类型的完整例子见 [示例配置](examples/basic_project/ledger.toml)；配置字段、空值、转义与诊断语义见[架构与格式](docs/rfc-architecture.md)。
 
@@ -189,6 +209,9 @@ string_line_exemptions = {}
 - 新实体必须通过 allocate 分配；使用命令返回的 ID，不自行猜号。
 - 按需读取单实体及其 anchor；同一账本上下文中复用已核实结果，账本变化、切换分支/工作区或交接后刷新，不在启动时加载整个账本。
 - 独立交接摘要包含当前 ID 与完整登记名称；新文档不复写旧别名，草案也应在写入后运行 check，但不铸号。
+- 给人看的文字里每一处实体都写「编号 + 登记全名」（不只首次；表格、进度条、摘要、聊天回复同样）；孤立编号只留在代码、测试、JSON 键、反引号里的命令参数与只给 agent 看的文件。
+- 章节号、列表号、步骤号只用数字，分级用点号（2.1）；章节号是定位符不是名字——指一件事写编号与全名，引章节时写出文件名。
+- 历史文字的命名基线只减不增：新文字违规就改文字，不加基线行；改好一行时同一笔删掉它的基线行。
 - 状态更新应依据明确证据，通过 update 的 --status/--note 和 --expected-status 写入，随后运行 check --json。
 - 遇到错误先定位原因，不伪造登记、不扩大忽略范围以绕过检查；退役代号命中时运行 check-legacy 并修复或留下窄范围豁免。
 - 草案、任务书和评审文本不铸号；只有落地提交内才分配并写入新 ID。锁只保护一次分配，不是跨克隆的唯一性证明。
@@ -221,6 +244,7 @@ Agent A 在交接文档中引用 `TASK-1`，Agent B 读取运行上下文后执�
 | 项目 `owner` 列布局、未登记引用的窄豁免 | 已实现；两种布局都严格校验，未知表头仍拒绝 |
 | 受控工作树文件锚点、未知引用检测、JSON 诊断与重复问题聚合 | 已实现 |
 | 枚举字面量退役代号守卫、分层豁免、聚合到 `check` | 已实现；JSON key 语义审计仍是盲区 |
+| 全名守卫、字母序号守卫、只减不增的历史文字基线，聚合到 `check` | 已实现，默认关闭；逐行判定，跨行的全名与字母名称（附录 B 类）不在范围内；聊天回复需 harness 钩子 |
 | 主工作区短锁、锁内重新读取、编号高水位、原子文件替换 | 已实现；支持同一主工作区多个本地进程分配 |
 | 按类型目录页（`index`）：标题层级树、账本指纹、逐字节新鲜度检查、可选接入 `check` | 已实现；不调用 Git，不删除文件，不覆盖非生成文件 |
 | 决策提交台账、批量改名映射、digest lineage | 未实现；明确拒绝把日期、锁或摘要猜测当作替代机制 |
@@ -253,7 +277,7 @@ python scripts/sync_skill.py --install  # 额外安装到存在但尚未安装�
 
 脚本按 SHA-256 比对，只处理已探测到的 harness Skill 根目录，不触碰其他 Skill。
 
-本轮验证：Windows、Python 3.14.5 上 **135 个测试通过**，覆盖 legacy 解码/唯一性、退役代号守卫、有限候选搜索、受锁状态更新与并发冲突，以及 Agent 工作流回归。另做了独立代理行为评测：未知简称与证据驱动更新通过；首轮评测发现“新文档复写旧别名”和“交接摘要漏 ID/名称”两处问题，修订 Skill 后重测通过，细节与局限见[验证记录](docs/validation.md)。这些结果来自本项目，未引用外部长期项目的测试或性能数字。
+本轮验证：Windows、Python 3.14.5 上 **255 个测试通过**，覆盖 legacy 解码/唯一性、退役代号守卫、有限候选搜索、受锁状态更新与并发冲突、全名与字母序号守卫及其基线棘轮，以及 Agent 工作流回归。另做了独立代理行为评测：未知简称与证据驱动更新通过；首轮评测发现“新文档复写旧别名”和“交接摘要漏 ID/名称”两处问题，修订 Skill 后重测通过，细节与局限见[验证记录](docs/validation.md)。这些结果来自本项目，未引用外部长期项目的测试或性能数字。
 
 目录页一轮：Linux、Python 3.11.15 上 **183 个测试通过**（新增 48 个），并在一个真实项目账本的导出副本（317 个实体、11 种类型）上只读试生成，见[验证记录](docs/validation.md)。
 

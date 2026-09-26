@@ -9,6 +9,7 @@ from .git import repository_root, safe_file
 from .index import (build_index, compare_index, display_path, resolve_out_dir,
                     verify_configured_index, write_index)
 from .linter import aggregate, check_registry_invariants, scan, scan_legacy
+from .naming import emit_baseline, scan_naming
 from .registry import EntityRegistry
 from .search import search_entities
 
@@ -39,6 +40,17 @@ file_exemptions = []
 column_masks = {}
 fence_exemptions = []
 string_line_exemptions = {}
+
+# Naming guards (off by default): full registered names in user-facing prose, digit-only
+# ordinals in Markdown, and a baseline for historical text that may only shrink.
+# [full_name_guard]
+# enabled = true
+# scope_globs = ["STATUS.md"]
+# [letter_label_guard]
+# enabled = true
+# [naming_baseline]
+# path = ".ledger/NAMING_BASELINE.tsv"
+# history_globs = ["docs/archive/**"]
 '''
 
 def output(value):
@@ -81,7 +93,8 @@ def run_index(args, root, cfg):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="repo-ledger")
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("init", "allocate", "lookup", "search", "update", "check", "check-legacy", "tree", "index"):
+    for command in ("init", "allocate", "lookup", "search", "update", "check", "check-legacy",
+                    "check-naming", "tree", "index"):
         p = commands.add_parser(command)
         p.add_argument("--root", type=Path)
         p.add_argument("--json", action="store_true")
@@ -110,6 +123,9 @@ def main(argv=None):
                            help="output directory, relative to the current directory; overrides [index] out_dir")
             p.add_argument("--check", action="store_true",
                            help="compare the pages on disk with a regeneration; write nothing")
+        if command == "check-naming":
+            # Prints the ratchet rows for today's historical violations; never writes a file.
+            p.add_argument("--emit-baseline", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "check" and (args.staged or args.commit or args.incremental):
@@ -207,6 +223,33 @@ def main(argv=None):
                     print(f"[{issue['code']}] {issue['location']} {issue['entity']}: {issue['reason']} "
                           f"(count={issue['count']}); {issue['suggestion']}")
             return 3 if not result["complete"] else int(bool(legacy_issues))
+        elif args.command == "check-naming":
+            if args.emit_baseline:
+                # Exact UTF-8 bytes with LF line ends, whatever the console code page is.
+                text = emit_baseline(root, registry)
+                stream = getattr(sys.stdout, "buffer", None)
+                sys.stdout.flush()
+                if stream is None:
+                    sys.stdout.write(text)
+                else:
+                    stream.write(text.encode("utf-8"))
+                    stream.flush()
+                return 0
+            naming_issues, naming_audit = scan_naming(root, registry)
+            scope = {"view": "worktree", "naming_guard": naming_audit}
+            result = {"status": "FAIL" if naming_issues else "PASS", "entities_count": len(registry.rows),
+                      "complete": not any(i.category == "incomplete" for i in naming_issues),
+                      "scope": scope, "issues": aggregate(naming_issues)}
+            if args.json:
+                output(result)
+            else:
+                print(f"{result['status']}: naming guards, "
+                      f"{len(naming_audit['letter_label_guard']['scanned'])} files scanned for labels, "
+                      f"{len(naming_audit['full_name_guard']['scanned'])} for full names")
+                for issue in result["issues"]:
+                    print(f"[{issue['code']}] {issue['location']} {issue['entity']}: {issue['reason']} "
+                          f"(count={issue['count']}); {issue['suggestion']}")
+            return 3 if not result["complete"] else int(bool(naming_issues))
         else:
             issues = check_registry_invariants(registry, root)
             index_issues, index_audit, generated = [], None, frozenset()
@@ -221,6 +264,9 @@ def main(argv=None):
                 # Added only with [index] check = true; every existing field is unchanged.
                 audit["index"] = index_audit
                 issues += index_issues
+            naming_issues, naming_audit = scan_naming(root, registry)
+            issues += naming_issues
+            audit["naming_guard"] = naming_audit
             result = {"status": "FAIL" if issues else "PASS", "entities_count": len(registry.rows),
                       "complete": not any(i.category == "incomplete" for i in issues),
                       "scope": audit, "issues": aggregate(issues)}
