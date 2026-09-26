@@ -26,25 +26,32 @@ Letter-label guard (``[letter_label_guard]``).  Ordinals carry digits only; a
 dotted number (``§2.1``) is the way to express levels.  Reported shapes:
 
   section  ``§2a`` ``§0c`` ``§1a.3`` ``§3A`` ``§B3.3`` ``§B8`` ``§D.3`` ``§A``,
-           ``section 2a``, ``第 2a 节``
+           ``§2(a)`` ``§3.1(b)`` ``§9(c)(e)``, ``section 2a``, ``第 2a 节``,
+           ``第 2(a) 节``
   step     ``步骤 2a``, ``阶段 2a``, ``step 3c``, ``Phase 2a``, ``stage 1b``,
-           ``Phase 4A`` (a number plus one letter a-h or A-H)
+           ``Phase 4A``, ``step 1(b)`` (a number plus one letter a-h or A-H,
+           or plus parenthesised letters)
   heading  ATX heading whose leading label has a letter: ``## 0a.``,
-           ``#### 2a addendum``, ``## 2A 标题``, ``## A.``, ``## (i)``, ``## Q6.``
+           ``#### 2a addendum``, ``## 2A 标题``, ``## 2(a)``, ``## A.``,
+           ``## (i)``, ``## Q6.``
   list     line-start label after optional quote/list markers and emphasis:
-           ``(a)`` ``a.`` ``b)`` ``(ii)`` ``2a.``, and ``3c`` or ``2B`` followed
-           by a space (letters a-g and A-G except D, so ``4h`` for hours and
-           ``3D`` stay silent)
+           ``(a)`` ``a.`` ``b)`` ``(ii)`` ``2a.`` ``2(b)``, and ``3c`` or ``2B``
+           followed by a space (letters a-g and A-G except D, so ``4h`` for
+           hours and ``3D`` stay silent)
   table    first table cell that is a number plus one letter a-h or A-H except
-           D (``| 2a |``, ``| 2A |``) or a parenthesised letter (``| (a) |``)
+           D (``| 2a |``, ``| 2A |``), a number plus parenthesised letters
+           (``| 2(a) |``) or a parenthesised letter (``| (a) |``)
+  inline   mid-line ``(a)``-``(h)``, ``(A)``-``(H)`` or roman ``(i)``-``(x)``
+           that is not glued to a preceding letter, digit, ``)``, ``]`` or
+           ``X*`` (so ``f(a)`` and ``E*(c)`` stay silent); and the same
+           letters glued to a number (``26.5(a)``, ``ISSUE-3(a)``,
+           ``2.1(ii)``) unless the number continues a word, an index or a
+           version (``E_2(c)``, ``x2(b)``, ``v2.1(a)``, ``f(2)(a)``)
 
 Uppercase suffixes: without a section or step word, ``D`` is not read as a label
 (``2D``, ``3D`` are dimensions); after one (``Phase 4D``) it is.  Other uppercase
 letters count, so a heading, list item or first table cell that starts with a size
 such as ``7B`` is reported -- move the size later in the line.
-  inline   mid-line ``(a)``-``(h)``, ``(A)``-``(H)`` or roman ``(i)``-``(x)``
-           that is not glued to a preceding letter, digit, ``)``, ``]`` or
-           ``X*`` (so ``f(a)`` and ``E*(c)`` stay silent)
 
 Deliberately not reported: letter names such as ``附录 B``, ``附表 A``,
 ``缺陷 A、B`` or ``Option 3R`` (several are registered entity names), bare ``2a``
@@ -84,21 +91,26 @@ _LETTER_OR_ROMAN = r"(?:[A-Za-z]|[ivxlc]{2,5}|[IVXLC]{2,5})"
 # One label letter after a number where no "section" or "step" word says it is a label:
 # a-h, and A-H except D, because 2D and 3D are dimensions.
 _SUFFIX = r"[a-hA-CE-H]"
+# One or more parenthesised letters glued to a number: 2(a), 3.1(b), 9(c)(e), 2.1(ii).
+_PAREN_LETTERS = r"(?:[(（]" + _LETTER_OR_ROMAN + r"[)）])+"
 
 SECTION_RES = (
     re.compile(r"§[ \t]?(?:[A-Za-z]+\.?\d+(?:\.\d+)*[A-Za-z]*(?:\.\d+)*"
-               r"|\d+(?:\.\d+)*[A-Za-z]+(?:\.\d+)*)(?![A-Za-z0-9])"),
+               r"|\d+(?:\.\d+)*(?:[A-Za-z]+(?:\.\d+)*|" + _PAREN_LETTERS + r"))(?![A-Za-z0-9])"),
     re.compile(r"§[ \t]?(?:[A-Z]|[IVX]{2,4})(?![A-Za-z0-9])"),
-    re.compile(r"(?<![A-Za-z])[Ss]ection[ \t]+\d+(?:\.\d+)*[A-Za-z](?![A-Za-z0-9])"),
-    re.compile(r"第[ \t]?\d+(?:\.\d+)*[A-Za-z]+(?:\.\d+)*[ \t]?[节章条款]"),
+    re.compile(r"(?<![A-Za-z])[Ss]ection[ \t]+\d+(?:\.\d+)*(?:[A-Za-z]|" + _PAREN_LETTERS
+               + r")(?![A-Za-z0-9])"),
+    re.compile(r"第[ \t]?\d+(?:\.\d+)*(?:[A-Za-z]+(?:\.\d+)*|" + _PAREN_LETTERS + r")[ \t]?[节章条款]"),
 )
 # After an explicit step word every letter a-h and A-H is a label (Phase 4A, step 2D).
-STEP_RE = re.compile(r"(?<![A-Za-z])(?:[Ss]tep|[Pp]hase|[Ss]tage|步骤|阶段)[ \t]?\d+(?:\.\d+)*[a-hA-H]"
-                     r"(?![A-Za-z0-9])")
+STEP_RE = re.compile(r"(?<![A-Za-z])(?:[Ss]tep|[Pp]hase|[Ss]tage|步骤|阶段)[ \t]?\d+(?:\.\d+)*"
+                     r"(?:[a-hA-H]|" + _PAREN_LETTERS + r")(?![A-Za-z0-9])")
 HEADING_START = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+(?:\*\*|__|\*|_)?")
 HEADING_LABELS = (
     # 0a.  3A.  5a′.  1a.3)  -- a number with letters, closed by . or )
     re.compile(r"§?[ \t]?\d+(?:\.\d+)*[A-Za-z]+(?:\.\d+)*′?(?=[.)](?:[\s*_]|$|[^\x00-\x7f]))"),
+    # 2(a)  3.1(b)  -- a number with parenthesised letters
+    re.compile(r"§?[ \t]?\d+(?:\.\d+)*" + _PAREN_LETTERS + r"(?![A-Za-z0-9])"),
     # 2a addendum, 2A 标题, 0c 更正, 1a.3 xyz -- one letter (_SUFFIX), then a boundary
     re.compile(r"§?[ \t]?\d+(?:\.\d+)*" + _SUFFIX + r"(?:\.\d+)*′?" + _TAIL),
     # Q6.  D4.
@@ -113,11 +125,18 @@ LIST_LABEL = re.compile(
     r"(?P<label>[(（]" + _LETTER_OR_ROMAN + r"[)）]"
     r"|" + _LETTER_OR_ROMAN + r"[.)]"
     r"|\d+(?:\.\d+)*[A-Za-z][.)]"
+    r"|\d+(?:\.\d+)*" + _PAREN_LETTERS +
     r"|\d+(?:\.\d+)*[a-gA-CE-G](?=[ \t]))" + _TAIL)
-TABLE_LABEL = re.compile(r"\d+(?:\.\d+)*" + _SUFFIX + r"|[(（](?:[A-Za-z]|[ivxlc]{2,5})[)）]")
+TABLE_LABEL = re.compile(r"\d+(?:\.\d+)*(?:" + _SUFFIX + r"|" + _PAREN_LETTERS + r")"
+                         r"|[(（](?:[A-Za-z]|[ivxlc]{2,5})[)）]")
+_INLINE_LETTER = r"[(（](?:[a-hA-H]|i{1,3}|iv|vi{0,3}|ix|x)[)）]"
 INLINE_LABEL = re.compile(
-    r"(?<![A-Za-z0-9_)\]])(?<![A-Za-z0-9_]\*)[(（](?:[a-hA-H]|i{1,3}|iv|vi{0,3}|ix|x)[)）]"
+    r"(?<![A-Za-z0-9_)\]])(?<![A-Za-z0-9_]\*)" + _INLINE_LETTER +
     r"(?=[\s*_,.;:/!?]|$|[^\x00-\x7f])")
+# Mid-line 26.5(a), ISSUE-3(a), 2.1(ii): the number must not continue a word, an index or a
+# version (E_2(c), x2(b), v2.1(a) and f(2)(a) stay silent).
+INLINE_DIGIT_LABEL = re.compile(
+    r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)*(?:" + _INLINE_LETTER + r")+(?![A-Za-z0-9])")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 SHA_RE = re.compile(r"[0-9a-f]{16}")
 COUNT_RE = re.compile(r"[1-9][0-9]*")
@@ -364,8 +383,9 @@ def _label_candidates(text):
             if content and TABLE_LABEL.fullmatch(content):
                 start = text.index(content, left)
                 found.append((start, start + len(content), 3, content, "table"))
-    for match in INLINE_LABEL.finditer(text):
-        found.append((match.start(), match.end(), 4, match.group(0), "inline"))
+    for regex in (INLINE_LABEL, INLINE_DIGIT_LABEL):
+        for match in regex.finditer(text):
+            found.append((match.start(), match.end(), 4, match.group(0), "inline"))
     found.sort(key=lambda item: (item[0], item[2]))
     kept = []
     for item in found:

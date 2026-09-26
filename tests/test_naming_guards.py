@@ -220,6 +220,35 @@ def test_uppercase_suffix_non_violations(naming, text):
     assert labels(naming, text) == []
 
 
+# Defect 5: a parenthesised letter glued to a number was never reported
+# (a project's register wrote "26.5(a)").
+@pytest.mark.parametrize("text,expected", [
+    ("按 ROLE_POLICY §2(a) 执行", ("§2(a)", "section")),
+    ("依据登记 26.5(a) 与 §7 第 8 项", ("26.5(a)", "inline")),
+    ("见 §3.1(b)", ("§3.1(b)", "section")),
+    ("对照 §9(c)(e) 两条", ("§9(c)(e)", "section")),
+    ("## 2(a) 标题", ("2(a)", "heading")),
+    ("- 2(b) 选项", ("2(b)", "list")),
+    ("| 2(a) | 维持链 |", ("2(a)", "table")),
+    ("见第 2(a) 节", ("第 2(a) 节", "section")),
+    ("已处理 ISSUE-3(a)", ("3(a)", "inline")),
+    ("Phase 2.6 step 1(b)", ("step 1(b)", "step")),
+    ("意见书 2.1(ii) 的措辞", ("2.1(ii)", "inline")),
+])
+def test_parenthesised_letter_after_number_is_reported(naming, text, expected):
+    assert labels(naming, text) == [(1, *expected)]
+
+
+@pytest.mark.parametrize("text", [
+    "E_2(c) 与 f_1(a) 是函数值",
+    "x2(b) 与 v2.1(a) 不是序号",
+    "f(2)(a) 是柯里化",
+    "2(n+1) 与 3(x+y) 是乘积",
+])
+def test_parenthesised_letter_after_number_non_violations(naming, text):
+    assert labels(naming, text) == []
+
+
 def test_line_digest_is_stable_and_trailing_space_insensitive(naming):
     digest = naming.line_digest("见 §2a")
     assert len(digest) == 16 and all(ch in "0123456789abcdef" for ch in digest)
