@@ -105,7 +105,10 @@ from .errors import Issue, LedgerError
 from .git import git, inventory, safe_file
 from .registry import ID_RE, LAYOUTS, _split_row_cells
 
-NAMING_RULES_VERSION = 1
+# Version 2 (2026-09-26): uppercase suffixes, parenthesised letters after a number, "sec"
+# pointers, "_"/"-" ID boundaries and former registered names in historical text.  A
+# baseline written under version 1 is skipped by the ratchet, never used as its root.
+NAMING_RULES_VERSION = 2
 BASELINE_HEADER = f"# repo-ledger naming baseline; rules={NAMING_RULES_VERSION}"
 BASELINE_COLUMNS = "check\tfile\tline_sha256\tcount"
 CHECKS = ("full_name", "letter_label")

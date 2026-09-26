@@ -681,6 +681,29 @@ def test_shallow_clone_refuses_to_emit_a_baseline(repo, tmp_path, capsys, monkey
     assert main(["check-naming", "--emit-baseline"]) == 0
 
 
+# The rework changed which lines count (defects 2, 3, 5, 6 and "sec"), after a rules=1
+# baseline had been committed on a project branch: rules version 2 skips such a baseline
+# instead of treating it as the ratchet root.
+def test_rules_version_2_skips_a_committed_version_1_baseline(repo, naming, capsys):
+    assert naming.NAMING_RULES_VERSION == 2
+    configure(repo)
+    write(repo, "log/2026.md", "TASK-1 旧写法\n")
+    write(repo, "NAMING_BASELINE.tsv", "# repo-ledger naming baseline; rules=1\n"
+                                       "check\tfile\tline_sha256\tcount\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "an empty baseline under the old rules")
+    write(repo, "NAMING_BASELINE.tsv", emit(capsys))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "the baseline under the current rules")
+    rc, report = run_json(capsys, ["check", "--json"])
+    assert rc == 0, report["issues"]
+    ratchet = report["scope"]["naming_guard"]["baseline"]["ratchet"]
+    assert ratchet["status"] == "verified"
+    assert ratchet["root_commit"] == git(repo, "rev-parse", "HEAD").strip()
+    assert [version["commit"] for version in ratchet["skipped_versions"]] == [
+        git(repo, "rev-parse", "HEAD~1").strip()[:8]]
+
+
 def test_uncommitted_baseline_is_reported_as_unverified(repo, capsys):
     configure(repo)
     write(repo, "log/2026.md", "TASK-1 旧写法\n")
