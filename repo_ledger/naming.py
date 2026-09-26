@@ -26,8 +26,9 @@ Letter-label guard (``[letter_label_guard]``).  Ordinals carry digits only; a
 dotted number (``§2.1``) is the way to express levels.  Reported shapes:
 
   section  ``§2a`` ``§0c`` ``§1a.3`` ``§3A`` ``§B3.3`` ``§B8`` ``§D.3`` ``§A``,
-           ``§2(a)`` ``§3.1(b)`` ``§9(c)(e)``, ``section 2a``, ``第 2a 节``,
-           ``第 2(a) 节``
+           ``§2(a)`` ``§3.1(b)`` ``§9(c)(e)``, ``section 2a``, ``section 1a.3``,
+           the abbreviations ``sec 0c`` ``sec.3b`` ``Sec. 2A`` ``sec0c``,
+           ``第 2a 节``, ``第 2(a) 节``
   step     ``步骤 2a``, ``阶段 2a``, ``step 3c``, ``Phase 2a``, ``stage 1b``,
            ``Phase 4A``, ``step 1(b)`` (a number plus one letter a-h or A-H,
            or plus parenthesised letters)
@@ -98,8 +99,9 @@ SECTION_RES = (
     re.compile(r"§[ \t]?(?:[A-Za-z]+\.?\d+(?:\.\d+)*[A-Za-z]*(?:\.\d+)*"
                r"|\d+(?:\.\d+)*(?:[A-Za-z]+(?:\.\d+)*|" + _PAREN_LETTERS + r"))(?![A-Za-z0-9])"),
     re.compile(r"§[ \t]?(?:[A-Z]|[IVX]{2,4})(?![A-Za-z0-9])"),
-    re.compile(r"(?<![A-Za-z])[Ss]ection[ \t]+\d+(?:\.\d+)*(?:[A-Za-z]|" + _PAREN_LETTERS
-               + r")(?![A-Za-z0-9])"),
+    # section 2a, sections 2b, sec 0c, Sec. 2A, sec.3b, sec0c, section 1a.3, sec 2(a)
+    re.compile(r"(?<![A-Za-z])(?:[Ss]ections?|[Ss]ecs?\.?)[ \t]?\d+(?:\.\d+)*"
+               r"(?:[A-Za-z](?:\.\d+)*|" + _PAREN_LETTERS + r")(?![A-Za-z0-9])"),
     re.compile(r"第[ \t]?\d+(?:\.\d+)*(?:[A-Za-z]+(?:\.\d+)*|" + _PAREN_LETTERS + r")[ \t]?[节章条款]"),
 )
 # After an explicit step word every letter a-h and A-H is a label (Phase 4A, step 2D).

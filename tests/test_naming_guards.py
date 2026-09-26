@@ -249,6 +249,33 @@ def test_parenthesised_letter_after_number_non_violations(naming, text):
     assert labels(naming, text) == []
 
 
+# Found by a project's cleanup pass after the review: abbreviated section pointers
+# ("sec 0c", "sec 1a.1") were never reported.
+@pytest.mark.parametrize("text,expected", [
+    ("按任务书 sec 0c 的更正", ("sec 0c", "section")),
+    ("see sec 1a.1 and sec 1a.2", ("sec 1a.1", "section")),
+    ("Sec. 2A 的登记表", ("Sec. 2A", "section")),
+    ("Sec 3b covers it", ("Sec 3b", "section")),
+    ("sec.3b 规则", ("sec.3b", "section")),
+    ("详见 sec0c", ("sec0c", "section")),
+    ("sec 2(a) 与", ("sec 2(a)", "section")),
+    ("the section 1a.3 receipt", ("section 1a.3", "section")),
+    ("sections 2b 与 2c", ("sections 2b", "section")),
+])
+def test_sec_abbreviation_pointers_are_reported(naming, text, expected):
+    assert labels(naming, text)[0] == (1, *expected)
+
+
+@pytest.mark.parametrize("text", [
+    "timeout 30 sec，每 5 secs 重试",
+    "见 sec 3.2 与 section 12",
+    "second 2a 不是章节",
+    "insecure 2a 也不是",
+])
+def test_sec_abbreviation_non_violations(naming, text):
+    assert labels(naming, text) == []
+
+
 def test_line_digest_is_stable_and_trailing_space_insensitive(naming):
     digest = naming.line_digest("见 §2a")
     assert len(digest) == 16 and all(ch in "0123456789abcdef" for ch in digest)
