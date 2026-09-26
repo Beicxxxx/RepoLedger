@@ -114,7 +114,7 @@ repo-ledger check --json
 | `repo-ledger check --json` | 只读校验工作树，输出诊断和可审计的扫描范围 |
 | `repo-ledger check-legacy --json` | 单独运行退役代号守卫；`check` 已自动聚合它 |
 | `repo-ledger check-naming --json` | 单独运行全名守卫与字母序号守卫（含历史文字基线）；`check` 已自动聚合它 |
-| `repo-ledger check-naming --emit-baseline` | 打印当前历史文字违规的基线行（只打印，不写文件） |
+| `repo-ledger check-naming --emit-baseline` | 打印当前历史文字违规的基线行（只打印，不写文件；守卫尚未开启时也照样评估，便于先建基线再开守卫） |
 | `repo-ledger tree` | 输出简易实体与父关系列表 |
 | `repo-ledger index --out docs/ledger-index` | 为每个已声明类型写一页 Markdown 目录，另写总览页；省略 `--out` 时读 `[index] out_dir` |
 | `repo-ledger index --check` | 在内存中重新生成并与磁盘逐字节比较，列出缺失、过期与多余页面；不写任何文件 |
@@ -277,7 +277,7 @@ python scripts/sync_skill.py --install  # 额外安装到存在但尚未安装�
 
 脚本按 SHA-256 比对，只处理已探测到的 harness Skill 根目录，不触碰其他 Skill。
 
-本轮验证：Windows、Python 3.14.5 上 **255 个测试通过**，覆盖 legacy 解码/唯一性、退役代号守卫、有限候选搜索、受锁状态更新与并发冲突、全名与字母序号守卫及其基线棘轮，以及 Agent 工作流回归。另做了独立代理行为评测：未知简称与证据驱动更新通过；首轮评测发现“新文档复写旧别名”和“交接摘要漏 ID/名称”两处问题，修订 Skill 后重测通过，细节与局限见[验证记录](docs/validation.md)。这些结果来自本项目，未引用外部长期项目的测试或性能数字。
+本轮验证：Windows、Python 3.14.5 上 **256 个测试通过**，覆盖 legacy 解码/唯一性、退役代号守卫、有限候选搜索、受锁状态更新与并发冲突、全名与字母序号守卫及其基线棘轮，以及 Agent 工作流回归。另做了独立代理行为评测：未知简称与证据驱动更新通过；首轮评测发现“新文档复写旧别名”和“交接摘要漏 ID/名称”两处问题，修订 Skill 后重测通过，细节与局限见[验证记录](docs/validation.md)。这些结果来自本项目，未引用外部长期项目的测试或性能数字。
 
 目录页一轮：Linux、Python 3.11.15 上 **183 个测试通过**（新增 48 个），并在一个真实项目账本的导出副本（317 个实体、11 种类型）上只读试生成，见[验证记录](docs/validation.md)。
 

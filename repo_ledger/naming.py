@@ -481,11 +481,13 @@ def _matches(rel, patterns):
                for p in patterns)
 
 
-def _collect(root, registry):
+def _collect(root, registry, force=False):
+    """Hits of both guards; force evaluates a guard that is still switched off."""
     cfg = registry.config
     full, labels, baseline = cfg.full_name_guard, cfg.letter_label_guard, cfg.naming_baseline
+    full_on, labels_on = full.enabled or force, labels.enabled or force
     audit = {
-        "status": "enabled" if (full.enabled or labels.enabled) else "disabled",
+        "status": "enabled" if (full_on or labels_on) else "disabled",
         "rules_version": NAMING_RULES_VERSION,
         "full_name_guard": {"enabled": full.enabled, "scope_globs": list(full.scope_globs),
                             "exclude_globs": list(full.exclude_globs),
@@ -508,8 +510,8 @@ def _collect(root, registry):
     pattern = _id_pattern(cfg.types, full.display_prefixes)
     tracked, new, _ = inventory(root)
     for rel in sorted(tracked | new):
-        in_full = full.enabled and _matches(rel, full.scope_globs) and not _matches(rel, full.exclude_globs)
-        in_labels = (labels.enabled and _matches(rel, labels.scope_globs)
+        in_full = full_on and _matches(rel, full.scope_globs) and not _matches(rel, full.exclude_globs)
+        in_labels = (labels_on and _matches(rel, labels.scope_globs)
                      and not _matches(rel, labels.exclude_globs))
         if not (in_full or in_labels):
             continue
@@ -630,8 +632,11 @@ def scan_naming(root, registry):
 
 
 def emit_baseline(root, registry):
-    """Baseline text for today's violations in historical files (printed, never written)."""
-    hits, issues, _audit = _collect(root, registry)
+    """Baseline text for today's violations in historical files (printed, never written).
+
+    Both guards are evaluated even while switched off: a project prepares and commits its
+    baseline before it switches the guards on."""
+    hits, issues, _audit = _collect(root, registry, force=True)
     if issues:
         issue = issues[0]
         raise LedgerError(issue.code, issue.reason, issue.location, category=issue.category)

@@ -489,3 +489,13 @@ def test_table_row_with_a_pipe_in_the_name(repo, capsys):
     write(repo, "STATUS.md", "| ISSUE-1 | Deploy \\| rollback | OPEN |\n")
     rc, report = run_json(capsys, ["check-naming", "--json"])
     assert rc == 0, report["issues"]
+
+
+def test_emit_baseline_evaluates_guards_that_are_still_switched_off(repo, capsys):
+    # A project prepares its baseline before it switches the guards on.
+    configure(repo, NAMING_CONFIG.replace("enabled = true", "enabled = false"))
+    write(repo, "log/2026.md", "TASK-1 旧写法\n见 §0c\n")
+    rows = [line.split("\t")[0] for line in emit(capsys).splitlines()[2:]]
+    assert sorted(rows) == ["full_name", "letter_label"]
+    rc, report = run_json(capsys, ["check", "--json"])
+    assert rc == 0 and report["scope"]["naming_guard"]["status"] == "disabled"

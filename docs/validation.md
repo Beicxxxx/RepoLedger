@@ -102,6 +102,6 @@ python -m repo_ledger --help、pyproject.toml 解析及 git diff --check 通过�
 
 ## 命名守卫（2026-09-26）
 
-新增 `repo_ledger/naming.py`（全名守卫、字母序号守卫、只减不增的历史文字基线）、`check-naming` 命令与 `--emit-baseline`，并由 `check` 聚合。红先行：新测试文件 `tests/test_naming_guards.py` 先对只有接口、不做检测的桩模块运行，62 failed / 49 passed（通过的 49 条是「不应误报」与配置拒绝用例）；实现后全绿。之后两次规则细化同样先红后绿：`§D.3` 类字母前缀带点的章节指针（1 failed → 绿），步骤号与不带点的行首标签（4 failed → 绿）。全套 RepoLedger 测试 255 passed（原 135 + 新 120），Windows、Python 3.14.5。
+新增 `repo_ledger/naming.py`（全名守卫、字母序号守卫、只减不增的历史文字基线）、`check-naming` 命令与 `--emit-baseline`，并由 `check` 聚合。红先行：新测试文件 `tests/test_naming_guards.py` 先对只有接口、不做检测的桩模块运行，62 failed / 49 passed（通过的 49 条是「不应误报」与配置拒绝用例）；实现后全绿。之后两次规则细化同样先红后绿：`§D.3` 类字母前缀带点的章节指针（1 failed → 绿），步骤号与不带点的行首标签（4 failed → 绿）。全套 RepoLedger 测试 256 passed（原 135 + 新 121；最后一条是「守卫关闭时也能打印基线」，同样先红后绿），Windows、Python 3.14.5。
 
 在字体仓库的 linked worktree 上试运行（项目 `ledger.toml` 在该分支开启两条守卫，规则版本 1）：全名守卫扫描 14 个面向用户的文件、字母序号守卫扫描 410 个 Markdown 文件，共 1,638 处命中；其中 1,496 处在历史文字（95 个文件），记入 1,030 行基线；142 处在活文件（14 个文件：81 处缺全名、61 处字母序号），作为清理工作表，`check` 因此为红，这是预期的红先行证据。两条守卫合计约 6 秒。抽查未发现误报；已知漏报（裸 `2a`、字母名称、跨行全名、顿号字母枚举）写入架构文档。
