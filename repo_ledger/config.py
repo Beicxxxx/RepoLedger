@@ -92,6 +92,7 @@ class NamingBaselineConfig:
 class LedgerConfig:
     schema_version: str = "1.0"
     registry_path: str = ".ledger/ENTITY_REGISTRY.md"
+    archive_registry_paths: list[str] = field(default_factory=list)
     allow_gaps: bool = True
     independent_order: bool = False
     unique_order_within_scope: bool = False
@@ -128,7 +129,7 @@ class LedgerConfig:
             fail("Unknown top-level configuration field")
         cfg = cls.default()
         section = data.get("ledger", {})
-        allowed = {"schema_version", "registry_path", "allow_gaps", "independent_order",
+        allowed = {"schema_version", "registry_path", "archive_registry_paths", "allow_gaps", "independent_order",
                    "unique_order_within_scope",
                    "code_extensions", "ignore_globs", "doc_dirs"}
         if not isinstance(section, dict) or set(section) - allowed:
@@ -141,6 +142,10 @@ class LedgerConfig:
             setattr(cfg, key, value)
         if cfg.schema_version != "1.0" or not relative_path(cfg.registry_path):
             fail("Expected schema 1.0 and a safe repository-relative registry_path")
+        archives = cfg.archive_registry_paths
+        if (not isinstance(archives, list) or not all(relative_path(p) for p in archives)
+                or len(set(archives)) != len(archives) or cfg.registry_path in archives):
+            fail("archive_registry_paths must be distinct safe paths excluding registry_path")
         for key in ("allow_gaps", "independent_order", "unique_order_within_scope"):
             if type(getattr(cfg, key)) is not bool:
                 fail(f"{key} must be boolean")

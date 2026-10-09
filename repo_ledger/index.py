@@ -221,8 +221,8 @@ def resolve_out_dir(root, config, cli_out=None):
         refuse(f"The output directory must not be inside a .git directory: {out_dir}")
     if out_dir.exists() and not out_dir.is_dir():
         refuse(f"The output path is not a directory: {out_dir}")
-    registry = (root / config.registry_path).resolve()
-    if registry.parent == out_dir:
+    registries = [(root / name).resolve() for name in [config.registry_path, *config.archive_registry_paths]]
+    if any(path.parent == out_dir for path in registries):
         refuse("The output directory holds the registry; choose a dedicated directory for the index")
     return out_dir
 
@@ -243,7 +243,7 @@ def build_index(root, config, out_dir):
         text = data.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise LedgerError("ERR_READ", str(exc), f"{path}:1:1", category="incomplete") from exc
-    registry = EntityRegistry.load(path, config, text=text)
+    registry = EntityRegistry.load_configured(root, config)
     problems = relation_issues(registry)
     if problems:
         first = problems[0]
@@ -258,14 +258,21 @@ class _Renderer:
         self.root, self.config, self.registry, self.out_dir = root, config, registry, out_dir
         self.digest = digest
         self.rows = {row.id: row for row in registry.rows}
+        decision = config.types.get("DECISION")
+        activation = decision is not None and "ACTIVE" in decision.allowed_statuses
+        self.visible_rows = [row for row in registry.main_rows
+                             if not (activation and _type(row.id) == "DECISION" and row.status != "ACTIVE")]
+        self.visible_ids = {row.id for row in self.visible_rows}
+        self.dormant_rows = [row for row in registry.main_rows
+                             if activation and _type(row.id) == "DECISION" and row.status == "DORMANT"]
         self.type_order = {name: position for position, name in enumerate(config.types)}
         # The evidence column keeps the registry's own name: "anchor" or the project "owner".
         self.anchor_label = registry.table_header[registry.fields.index("anchor")]
         prefixes = "|".join(re.escape(name) for name in sorted(config.types, key=len, reverse=True))
         self.mention = re.compile(rf"(?<![A-Za-z0-9_-])(?:{prefixes})-[0-9]+(?![A-Za-z0-9_-])")
         self.same_type_children, self.other_type_children, self.superseded_by = {}, {}, {}
-        for row in registry.rows:
-            if row.parent:
+        for row in self.visible_rows:
+            if row.parent in self.visible_ids:
                 same = _type(row.parent) == _type(row.id)
                 bucket = self.same_type_children if same else self.other_type_children
                 bucket.setdefault(row.parent, []).append(row)
@@ -306,6 +313,10 @@ class _Renderer:
         code = _backticked(value)
         for match in self.mention.finditer(value):
             row = self.rows.get(match.group(0))
+            if row is not None and row.id not in self.visible_ids:
+                raise LedgerError("ERR_INDEX_HIDDEN_REFERENCE",
+                                  "Primary index prose references a hidden entity; rewrite the live prose explicitly before indexing",
+                                  f"{self.registry.path}:1:1", row.id)
             if row is None or value.startswith(" " + row.name, match.end()):
                 continue
             if _in_path(value, match.start(), match.end()) or any(
@@ -338,12 +349,13 @@ class _Renderer:
         parts = [f"status: {markdown_text(row.status)}", f"date: {markdown_text(row.date)}"]
         if row.anchor:
             parts.append(f"{self.anchor_label}: {self.owner(row.anchor)}")
-        if other_type_parent:
+        if other_type_parent and row.parent in self.visible_ids:
             parts.append(f"parent: {self.label(row.parent)}")
         if row.legacy:
             parts.append(f"legacy: {code_span(row.legacy)}")
-        if row.supersedes:
-            parts.append("supersedes: " + "; ".join(self.label(target) for target in _targets(row.supersedes)))
+        visible_targets = [target for target in _targets(row.supersedes) if target in self.visible_ids]
+        if visible_targets:
+            parts.append("supersedes: " + "; ".join(self.label(target) for target in visible_targets))
         later = sorted(self.superseded_by.get(row.id, []), key=self.typed_id_key)
         if later:
             parts.append("superseded by: " + "; ".join(self.label(other.id) for other in later))
@@ -368,7 +380,8 @@ class _Renderer:
         return "\n".join(lines)
 
     def tree(self, type_name, rows):
-        top = [row for row in rows if not row.parent or _type(row.parent) != type_name]
+        row_ids = {row.id for row in rows}
+        top = [row for row in rows if row.parent not in row_ids]
         stack = [(row, 0) for row in reversed(sorted(top, key=self.top_key))]
         blocks, bullets, rendered = [], [], 0
         while stack:
@@ -401,7 +414,7 @@ class _Renderer:
         return counts
 
     def type_page(self, type_name):
-        rows = [row for row in self.registry.rows if _type(row.id) == type_name]
+        rows = [row for row in self.visible_rows if _type(row.id) == type_name]
         blocks = [f"{self.header}\n# {markdown_text(type_name)} entities"]
         if self.description(type_name):
             blocks.append(f"Description: {self.prose(self.description(type_name))}")
@@ -415,15 +428,17 @@ class _Renderer:
                   for status, count in self.status_counts(type_name, rows).items()]
         blocks.append("\n".join(table))
         blocks += self.tree(type_name, rows)
+        if type_name == "DECISION" and self.dormant_rows:
+            blocks += ["## DORMANT", "\n".join(f"- {self.label(row.id)}" for row in sorted(self.dormant_rows, key=self.typed_id_key))]
         return "\n\n".join(blocks) + "\n"
 
     def overview(self):
-        total = len(self.registry.rows)
+        total = len(self.visible_rows)
         summary = (f"Registry {code_span(self.config.registry_path)} (sha256 {code_span(self.digest[:12])}): "
                    f"{_count(total, 'entity', 'entities')} in {_count(len(self.config.types), 'type', 'types')}.")
         table = ["| type | description | entities | by status | page |", "| --- | --- | --- | --- | --- |"]
         for type_name in self.config.types:
-            rows = [row for row in self.registry.rows if _type(row.id) == type_name]
+            rows = [row for row in self.visible_rows if _type(row.id) == type_name]
             by_status = ", ".join(f"{markdown_text(status, table=True)} {count}"
                                   for status, count in self.status_counts(type_name, rows).items() if count)
             page = f"{type_name}.md"
