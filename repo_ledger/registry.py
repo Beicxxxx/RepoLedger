@@ -247,10 +247,10 @@ class EntityRegistry:
         return reg
 
     @classmethod
-    def load_configured(cls, root, config):
+    def load_configured(cls, root, config, *, primary_text=None):
         """Load all issuance records, retaining the primary table as the sole write target."""
         primary = safe_file(root, config.registry_path)
-        reg = cls.load(primary, config, check_gaps=not config.archive_registry_paths)
+        reg = cls.load(primary, config, text=primary_text, check_gaps=not config.archive_registry_paths)
         reg.main_rows = list(reg.rows)
         reg.archives = []
         ids = {r.id for r in reg.rows}

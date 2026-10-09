@@ -243,7 +243,7 @@ def build_index(root, config, out_dir):
         text = data.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise LedgerError("ERR_READ", str(exc), f"{path}:1:1", category="incomplete") from exc
-    registry = EntityRegistry.load_configured(root, config)
+    registry = EntityRegistry.load_configured(root, config, primary_text=text)
     problems = relation_issues(registry)
     if problems:
         first = problems[0]
