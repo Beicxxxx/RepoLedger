@@ -157,7 +157,7 @@ def main(argv=None):
             return run_index(args, cfg_path.parent.resolve(), LedgerConfig.load(cfg_path))
         root = repository_root(cfg_path.parent)
         cfg = LedgerConfig.load(cfg_path)
-        registry = EntityRegistry.load(safe_file(root, cfg.registry_path), cfg)
+        registry = EntityRegistry.load_configured(root, cfg)
         if args.command == "allocate":
             row = registry.allocate(args.type, args.name, args.status, args.parent, args.anchor,
                                     args.supersedes, args.note, args.legacy, args.order or None)
@@ -194,8 +194,13 @@ def main(argv=None):
                 raise LedgerError(issue.code, issue.reason, issue.location, issue.entity)
             # order is a render-only plan position; ledger rows stay in append-only serial order.
             grouped = {}
-            for row in registry.rows:
-                grouped.setdefault(row.parent, []).append(row)
+            decision = cfg.types.get("DECISION")
+            activation = decision is not None and "ACTIVE" in decision.allowed_statuses
+            visible = [row for row in registry.main_rows if not (
+                activation and row.id.startswith("DECISION-") and row.status != "ACTIVE")]
+            visible_ids = {row.id for row in visible}
+            for row in visible:
+                grouped.setdefault(row.parent if row.parent in visible_ids else "", []).append(row)
 
             def order_key(candidate):
                 return (int(candidate.order) if candidate.order.isdigit() else 0, candidate.id)

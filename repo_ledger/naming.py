@@ -729,7 +729,7 @@ def _collect(root, registry, force=False):
         if not (in_full or in_labels):
             continue
         reason = None
-        if rel == cfg.registry_path:
+        if rel in [cfg.registry_path, *cfg.archive_registry_paths]:
             reason = "authoritative registry parsed separately"
         elif rel == baseline.path:
             reason = "naming baseline"

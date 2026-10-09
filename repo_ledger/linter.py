@@ -15,7 +15,8 @@ COMMIT_ANCHOR_RE = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 
 def _emitter(registry, issues):
     def emit(code, row, reason):
-        issues.append(Issue(code, f"{registry.path}:{registry.lines.get(row.id, 1)}:1",
+        source = registry.sources.get(row.id, registry.path)
+        issues.append(Issue(code, f"{source}:{registry.lines.get(row.id, 1)}:1",
                             row.id, reason, "Inspect the entity and its evidence; correct the cause explicitly."))
     return emit
 
@@ -99,7 +100,7 @@ def scan(root, registry, generated=frozenset()):
                   if cfg.reference_exemptions]
     for rel in sorted(tracked | new):
         reason = None
-        if rel == cfg.registry_path:
+        if rel in [cfg.registry_path, *cfg.archive_registry_paths]:
             reason = "authoritative registry parsed separately"
         elif rel in generated:
             reason = GENERATED_PAGE_REASON
@@ -218,7 +219,7 @@ def scan_legacy(root, registry, generated=frozenset()):
     issues = []
     for rel in sorted(tracked | new):
         reason = None
-        if rel == cfg.registry_path:
+        if rel in [cfg.registry_path, *cfg.archive_registry_paths]:
             reason = "authoritative registry parsed separately"
         elif rel in generated:
             reason = GENERATED_PAGE_REASON
