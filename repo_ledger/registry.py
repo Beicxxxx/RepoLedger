@@ -123,13 +123,15 @@ class EntityRegistry:
     def __init__(self, path, config):
         self.path, self.config = Path(path), config
         self.rows = []
+        self.sources = {}
+        self.main_rows = self.rows
         self.lines = {}
         self.preamble_lines = ["<!-- schema: 1.0 -->", "# Entity Registry", ""]
         self.fields = CANONICAL_FIELDS
         self.table_header = list(TABLE_HEADER)
 
     @classmethod
-    def load(cls, path, config, text=None):
+    def load(cls, path, config, text=None, *, check_gaps=True):
         """Parse the registry at ``path``; ``text`` lets a caller parse the exact bytes it read."""
         reg = cls(path, config)
         if text is None:
@@ -197,7 +199,7 @@ class EntityRegistry:
                 typ, serial = match[1], int(match[2])
                 if serial <= serials.get(typ, 0):
                     raise LedgerError("ERR_SERIAL_ORDER", "Rows must increase per type")
-                if not config.allow_gaps and serial != serials.get(typ, 0) + 1:
+                if check_gaps and not config.allow_gaps and serial != serials.get(typ, 0) + 1:
                     raise LedgerError("ERR_SERIAL_GAP", "Gap prohibited by configuration; never reuse issued IDs")
                 if not row.name or not row.date:
                     raise LedgerError("ERR_INVALID_FIELD", "name and date are required")
@@ -237,13 +239,60 @@ class EntityRegistry:
                 serials[typ] = serial
                 reg.rows.append(row)
                 reg.lines[row.id] = n + 1
+                reg.sources[row.id] = Path(path)
             except LedgerError as exc:
                 exc.issue.location = f"{path}:{n+1}:1"
                 exc.issue.entity = row.id if row is not None else ""
                 raise
         return reg
 
+    @classmethod
+    def load_configured(cls, root, config, *, primary_text=None):
+        """Load all issuance records, retaining the primary table as the sole write target."""
+        primary = safe_file(root, config.registry_path)
+        reg = cls.load(primary, config, text=primary_text, check_gaps=not config.archive_registry_paths)
+        reg.main_rows = list(reg.rows)
+        reg.archives = []
+        ids = {r.id for r in reg.rows}
+        aliases = {r.legacy for r in reg.rows if r.legacy}
+        orders = {(r.id.rsplit('-', 1)[0], r.parent, r.order) for r in reg.rows}
+        for name in config.archive_registry_paths:
+            path = safe_file(root, name)
+            if path.resolve() == primary.resolve() or any(path.resolve() == a.path.resolve() for a in reg.archives):
+                raise LedgerError("ERR_CONFIG", "Registry paths resolve to the same file", f"{path}:1:1")
+            archived = cls.load(path, config, check_gaps=False)
+            for row in archived.rows:
+                location = f"{path}:{archived.lines[row.id]}:1"
+                if row.id in ids:
+                    raise LedgerError("ERR_DUPLICATE_ID", "Duplicate entity across registries", location, row.id)
+                if row.legacy and row.legacy in aliases:
+                    raise LedgerError("ERR_DUPLICATE_LEGACY", "Duplicate legacy across registries", location, row.id)
+                if row.id in aliases or (row.legacy and row.legacy in ids):
+                    raise LedgerError("ERR_LEGACY_COLLISION", "ID and legacy collide across registries", location, row.id)
+                key = (row.id.rsplit('-', 1)[0], row.parent, row.order)
+                if config.independent_order and config.unique_order_within_scope and key in orders:
+                    raise LedgerError("ERR_DUPLICATE_ORDER", "Duplicate order across registries", location, row.id)
+                ids.add(row.id)
+                if row.legacy:
+                    aliases.add(row.legacy)
+                orders.add(key)
+                reg.rows.append(row)
+                reg.lines[row.id] = archived.lines[row.id]
+                reg.sources[row.id] = path
+            reg.archives.append(archived)
+        if not config.allow_gaps:
+            serials = {}
+            for row in reg.rows:
+                typ, number = row.id.rsplit('-', 1)
+                serials.setdefault(typ, []).append(int(number))
+            for typ, numbers in serials.items():
+                if sorted(numbers) != list(range(1, max(numbers) + 1)):
+                    raise LedgerError("ERR_SERIAL_GAP", "Gap in combined issued IDs", f"{primary}:1:1", typ)
+        return reg
+
     def save(self):
+        if getattr(self, 'archives', None) and any(self.sources.get(r.id, self.path) != self.path for r in self.rows):
+            raise LedgerError("ERR_ARCHIVE_READONLY", "Save only primary rows; archived issuance records must stay separate")
         # A nine-column registry upgrades on first save; recognised ten-column layouts are kept.
         upgrading = self.table_header == LEGACY_TABLE_HEADER
         header = list(TABLE_HEADER) if upgrading else list(self.table_header)
@@ -282,8 +331,10 @@ class EntityRegistry:
         root = self._main_worktree_root()
         state_path = root / ".git" / "repo-ledger-serials.json"
         with FileLock(root / ".git" / "repo-ledger-allocate.lock"):
-            fresh = self.load(self.path, self.config)
-            self.rows, self.lines, self.preamble_lines = fresh.rows, fresh.lines, fresh.preamble_lines
+            fresh = self.load_configured(root, LedgerConfig.load(root / 'ledger.toml'))
+            if fresh.path.resolve() != self.path.resolve():
+                raise LedgerError("ERR_REGISTRY_PATH_CHANGED", "Registry path changed; reload before allocation")
+            self.__dict__.update(fresh.__dict__)
             if type_name not in self.config.types:
                 raise LedgerError("ERR_INVALID_ID_FORMAT", "Unknown entity type")
             issues = check_registry_invariants(self, root)
@@ -340,12 +391,19 @@ class EntityRegistry:
             if len(set(targets)) != len(targets) or any(not ID_RE.fullmatch(t) for t in targets):
                 raise LedgerError("ERR_INVALID_RELATION", "Invalid supersedes list", entity=row.id)
             self.rows.append(row)
+            self.sources[row.id] = self.path
             issues = check_registry_invariants(self, root)
             if issues:
                 raise LedgerError(issues[0].code, issues[0].reason, issues[0].location, issues[0].entity)
             state[type_name] = serial
             atomic_write(state_path, json.dumps(state, indent=2) + "\n")
-            self.save()
+            self.main_rows.append(row)
+            all_rows = self.rows
+            self.rows = self.main_rows
+            try:
+                self.save()
+            finally:
+                self.rows = all_rows
             return row
 
     def update(self, entity_id, *, status=None, note=None, order=None, expected_status=None):
@@ -365,7 +423,11 @@ class EntityRegistry:
                                   "Registry path changed; reload the registry before updating",
                                   f"{root / 'ledger.toml'}:1:1", entity=entity_id)
 
-            fresh = self.load(latest_path, latest_config)
+            fresh = self.load_configured(root, latest_config)
+            archived_row = fresh.lookup(entity_id)
+            if archived_row is not None and fresh.sources[archived_row.id] != fresh.path:
+                raise LedgerError("ERR_ARCHIVE_READONLY", "Archived records are immutable; create a new decision",
+                                  f"{fresh.sources[archived_row.id]}:{fresh.lines[archived_row.id]}:1", entity_id)
             row_index = next((index for index, row in enumerate(fresh.rows)
                               if row.id == entity_id), None)
             if row_index is None:
@@ -434,10 +496,12 @@ class EntityRegistry:
                 issue = issues[0]
                 raise LedgerError(issue.code, issue.reason, issue.location, issue.entity)
 
-            fresh.save()
-            self.path = fresh.path
-            self.config = fresh.config
-            self.rows = fresh.rows
-            self.lines = fresh.lines
-            self.preamble_lines = fresh.preamble_lines
+            fresh.main_rows = [candidate if r.id == candidate.id else r for r in fresh.main_rows]
+            all_rows = fresh.rows
+            fresh.rows = fresh.main_rows
+            try:
+                fresh.save()
+            finally:
+                fresh.rows = all_rows
+            self.__dict__.update(fresh.__dict__)
             return candidate
