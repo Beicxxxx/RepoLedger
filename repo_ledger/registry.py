@@ -30,8 +30,13 @@ RegistryError = LedgerError
 ID_RE = re.compile(r"([A-Z][A-Z_]*)-([1-9][0-9]*)")
 ORDER_RE = re.compile(r"[1-9][0-9]*")
 
+_CONTROL_RE = re.compile("[\x00-\x1f\x7f\x85\u2028\u2029]")
+# One token per escape, unescaped pipe or run of plain text, so a long note is not walked per character.
+_CELL_TOKEN_RE = re.compile(r"\\(.?)|(\|)|([^\\|]+)", re.S)
+
+
 def encode(value):
-    if value != value.strip() or any(ord(c) < 32 or c in "\x7f\x85\u2028\u2029" for c in value):
+    if value != value.strip() or _CONTROL_RE.search(value):
         raise LedgerError("ERR_INVALID_FIELD", "Fields cannot contain control characters or outer whitespace")
     return value.replace("\\", "\\\\").replace("|", "\\|")
 
@@ -45,20 +50,17 @@ def _split_row_cells(line, expected_columns=None):
     if not line.startswith("|") or not line.endswith("|"):
         raise LedgerError("ERR_ROW_FORMAT", "Expected a pipe-delimited row")
     cells, cell = [], []
-    i = 1
-    while i < len(line):
-        char = line[i]
-        if char == "\\":
-            i += 1
-            if i >= len(line) or line[i] not in ("\\", "|"):
-                raise LedgerError("ERR_ESCAPE", f"Invalid escape at column {i}")
-            cell.append(line[i])
-        elif char == "|":
+    for match in _CELL_TOKEN_RE.finditer(line, 1):
+        escaped, pipe, text = match.groups()
+        if text is not None:
+            cell.append(text)
+        elif pipe:
             cells.append("".join(cell).strip())
             cell = []
+        elif escaped in ("\\", "|"):
+            cell.append(escaped)
         else:
-            cell.append(char)
-        i += 1
+            raise LedgerError("ERR_ESCAPE", f"Invalid escape at column {match.start() + 1}")
     if cell or (expected_columns is not None and len(cells) != expected_columns):
         expected = expected_columns if expected_columns is not None else "a valid number of"
         raise LedgerError("ERR_COLUMN_COUNT", f"Expected {expected} columns, got {len(cells)}")
@@ -307,6 +309,28 @@ class EntityRegistry:
     def lookup(self, entity_id):
         return next((row for row in self.rows if row.id == entity_id or (entity_id and row.legacy == entity_id)), None)
 
+    def ancestors(self, entity_id):
+        """Parent chain of an entity, root first; stops at a missing parent or a cycle."""
+        rows = {row.id: row for row in self.rows}
+        chain, seen = [], {entity_id}
+        current = rows.get(entity_id)
+        while current is not None and current.parent and current.parent not in seen:
+            seen.add(current.parent)
+            current = rows.get(current.parent)
+            if current is not None:
+                chain.append(current)
+        return chain[::-1]
+
+    def children(self, entity_id):
+        """Direct children of any type: declared type order, then plan order and ID number."""
+        return sorted((row for row in self.rows if row.parent == entity_id), key=self.sort_key)
+
+    def sort_key(self, row):
+        type_name, serial = row.id.rsplit("-", 1)
+        types = list(self.config.types)
+        return (types.index(type_name) if type_name in types else len(types), type_name,
+                int(row.order) if ORDER_RE.fullmatch(row.order) else 0, int(serial))
+
     def _main_worktree_root(self, operation="allocate"):
         root = self.path.resolve()
         for _ in Path(self.config.registry_path).parts:
@@ -406,13 +430,18 @@ class EntityRegistry:
                 self.rows = all_rows
             return row
 
-    def update(self, entity_id, *, status=None, note=None, order=None, expected_status=None):
-        """Update mutable status, note and (when enabled) plan order under the allocation lock."""
+    def update(self, entity_id, *, status=None, note=None, order=None, expected_status=None,
+               parent=None):
+        """Update status, note, parent and (when enabled) plan order under the allocation lock.
+
+        parent re-attaches the entity under another parent ("" detaches it); the ID never
+        changes.  With independent_order and no explicit order, a moved entity takes the next
+        free plan position under its new parent."""
         from .linter import check_registry_invariants
 
-        if status is None and note is None and order is None:
+        if status is None and note is None and order is None and parent is None:
             raise LedgerError("ERR_NO_UPDATE",
-                              "Supply status, note, and/or order to update", entity=entity_id)
+                              "Supply status, note, parent and/or order to update", entity=entity_id)
 
         root = self._main_worktree_root("update")
         with FileLock(root / ".git" / "repo-ledger-allocate.lock"):
@@ -450,6 +479,15 @@ class EntityRegistry:
             next_status = row.status if status is None else status
             next_note = row.note if note is None else note
             next_order = row.order
+            next_parent = row.parent
+            if parent is not None:
+                if not isinstance(parent, str) or (parent and not ID_RE.fullmatch(parent)):
+                    raise LedgerError("ERR_INVALID_RELATION", "parent must be one ID or empty",
+                                      location, entity=row.id)
+                next_parent = parent
+                if (next_parent != row.parent and order is None
+                        and latest_config.independent_order):
+                    next_order = str(fresh._next_order(type_name, next_parent))
             if order is not None:
                 if not latest_config.independent_order:
                     raise LedgerError("ERR_ORDER_FIXED",
@@ -461,7 +499,7 @@ class EntityRegistry:
                                       location, entity=row.id)
                 clash = next((other for other in fresh.rows
                               if latest_config.unique_order_within_scope
-                              and other.id != row.id and other.parent == row.parent
+                              and other.id != row.id and other.parent == next_parent
                               and other.id.rsplit("-", 1)[0] == type_name
                               and other.order == order), None)
                 if clash is not None:
@@ -483,7 +521,8 @@ class EntityRegistry:
                     exc.issue.entity = row.id
                     raise
 
-            candidate = replace(row, status=next_status, note=next_note, order=next_order)
+            candidate = replace(row, status=next_status, note=next_note, order=next_order,
+                                parent=next_parent)
             try:
                 format_row(candidate, fresh.fields)
             except LedgerError as exc:

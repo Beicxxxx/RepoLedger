@@ -466,6 +466,9 @@ def _blobs(root, specs):
     return texts
 
 
+_ROW_CELLS = {}
+
+
 def _registry_names(text):
     """(id, name) pairs of one registry version; rows that do not parse contribute nothing."""
     fields, pairs = None, []
@@ -473,9 +476,15 @@ def _registry_names(text):
         line = raw.strip()
         if not line.startswith("|"):
             continue
-        try:
-            cells = _split_row_cells(line)
-        except LedgerError:
+        # Successive registry versions repeat almost every row, so each distinct line is split once.
+        cells = _ROW_CELLS.get(line)
+        if cells is None:
+            try:
+                cells = _split_row_cells(line)
+            except LedgerError:
+                cells = ()
+            _ROW_CELLS[line] = cells
+        if not cells:
             continue
         if fields is None:
             fields = LAYOUTS.get(tuple(cells))

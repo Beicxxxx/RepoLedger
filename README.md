@@ -108,14 +108,15 @@ repo-ledger check --json
 | --- | --- |
 | `repo-ledger init` | 初始化配置和带 schema 的账本 |
 | `repo-ledger allocate TASK "Title" --anchor docs/proposal.md` | 校验锚点并分配新 ID |
-| `repo-ledger lookup TASK-1 --json` | 按当前 ID 或历史 `legacy` 别名返回当前实体 |
+| `repo-ledger lookup TASK-1 --json` | 按当前 ID 或历史 `legacy` 别名返回当前实体；文本输出另列父实体、祖先路径与直接子实体，`--json --relations` 加 `ancestors` 与 `children` |
+| `repo-ledger lookup TASK-3 --ref` | 打印汇报用的一行：`TASK-3 名称（↳ TASK-2 父实体名称）`，无父实体时只有 ID 与名称 |
 | `repo-ledger search "rate" --json --limit 5` | 按 ID、名称或 legacy 字面子串查找有限候选 |
-| `repo-ledger update TASK-1 --status READY --expected-status BACKLOG --json` | 在短锁内校验并更新状态；可用 `--note` 更新备注 |
+| `repo-ledger update TASK-1 --status READY --expected-status BACKLOG --json` | 在短锁内校验并更新状态；可用 `--note` 更新备注，`--parent TASK-4` 改挂父实体（`--parent ""` 解除），ID 不变 |
 | `repo-ledger check --json` | 只读校验工作树，输出诊断和可审计的扫描范围 |
 | `repo-ledger check-legacy --json` | 单独运行退役代号守卫；`check` 已自动聚合它 |
 | `repo-ledger check-naming --json` | 单独运行全名守卫与字母序号守卫（含历史文字基线）；`check` 已自动聚合它 |
 | `repo-ledger check-naming --emit-baseline` | 打印当前历史文字违规的基线行（只打印，不写文件；守卫尚未开启时也照样评估，便于先建基线再开守卫） |
-| `repo-ledger tree` | 输出简易实体与父关系列表 |
+| `repo-ledger tree [ID] [--type TYPE] [--all] [--json]` | 父子树：给 ID 时只列该实体的祖先与子树，`--type` 只列该类型的顶层实体，`--all` 也列非 ACTIVE 的决定；同级按类型声明顺序、计划位置、ID 数字排序 |
 | `repo-ledger index --out docs/ledger-index` | 为每个已声明类型写一页 Markdown 目录，另写总览页；省略 `--out` 时读 `[index] out_dir` |
 | `repo-ledger index --check` | 在内存中重新生成并与磁盘逐字节比较，列出缺失、过期与多余页面；不写任何文件 |
 
@@ -123,7 +124,9 @@ repo-ledger check --json
 
 搜索忽略大小写，不猜测简称、不使用正则或语义相似度。默认最多返回 5 条，`--limit` 范围为 1–100；`total` 表示全部命中数。先核对候选并 lookup，再判断是否需要新实体。没有搜索命中不等于语义上不存在重复任务。
 
-更新只接受当前 ID，只能修改 status/note，不能借 legacy 改派实体。锁内重新读取配置和账本后原子写入，与 allocate 使用同一短锁。`--expected-status` 可检测状态是否已被他人更改；冲突时重新查询和判断，不盲目重试。它不检测同状态的备注覆盖或状态往返，也不是跨克隆事务。`--note ""` 清空备注；状态合法并不证明工作完成，迁移矩阵仍未实现。
+更新只接受当前 ID，只能修改 status/note/parent/order，不能借 legacy 改派实体。
+
+从属关系只记在 `parent` 字段，编号保持扁平：`TASK-100` 挂在 `TASK-30` 下时不改名为 `TASK-30.1`。层级编号在改挂父实体或升为顶层时要么改名（旧引用全断），要么名不副实；`parent` 字段改挂时 ID 不变，`update --parent` 在锁内校验目标存在、无自引用与环。要在汇报中看出从属，用 `lookup --ref`、`tree ID` 或 `index` 目录页。锁内重新读取配置和账本后原子写入，与 allocate 使用同一短锁。`--expected-status` 可检测状态是否已被他人更改；冲突时重新查询和判断，不盲目重试。它不检测同状态的备注覆盖或状态往返，也不是跨克隆事务。`--note ""` 清空备注；状态合法并不证明工作完成，迁移矩阵仍未实现。
 
 ### 按类型目录页（`repo-ledger index`）
 
