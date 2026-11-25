@@ -1,5 +1,7 @@
 """Read-only working tree validation with an auditable scan inventory."""
+import bisect
 import fnmatch
+import itertools
 from pathlib import Path
 import re
 from .errors import Issue, LedgerError
@@ -83,6 +85,9 @@ def relation_issues(registry):
                         stack.append((target, False))
     return issues
 
+_LEFT_JOINED = re.compile(r"[\w-]")
+
+
 def scan(root, registry, generated=frozenset()):
     tracked, new, git_ignored = inventory(root)
     cfg = registry.config
@@ -94,7 +99,9 @@ def scan(root, registry, generated=frozenset()):
              "suppressed": [], "scanned": [], "excluded": []}
     issues = []
     prefixes = "|".join(re.escape(t) for t in cfg.types)
-    pattern = re.compile(rf"(?<![\w-])(?:{prefixes})-[0-9]+(?![\w-])")
+    # The left boundary is tested in Python: a leading look-behind stops the regex engine from
+    # skipping ahead on the first letters, which made this scan several times slower.
+    pattern = re.compile(rf"(?:{prefixes})-[0-9]+(?![\w-])")
     known = {r.id for r in registry.rows}
     exemptions = [(path, set(tokens)) for path, tokens in cfg.reference_exemptions.items()
                   if cfg.reference_exemptions]
@@ -118,22 +125,30 @@ def scan(root, registry, generated=frozenset()):
             issues.append(Issue("ERR_SCAN_INCOMPLETE", f"{rel}:1:1", "", str(exc),
                                 "Restore a readable UTF-8 regular file in the repository.", "incomplete"))
             continue
-        for number, line in enumerate(content.splitlines(), 1):
-            for match in pattern.finditer(line):
-                if match[0] not in known:
-                    exemption = next((tokens for path, tokens in exemptions
-                                      if _matches_glob(rel, path) and match[0] in tokens), None)
-                    if exemption is not None:
-                        # Narrow, declared suppression: recorded, never silent.
-                        if len(audit["suppressed"]) < 50:
-                            audit["suppressed"].append(
-                                {"file": rel, "line": number, "column": match.start() + 1,
-                                 "token": match[0]})
-                        continue
-                    issues.append(Issue("ERR_UNREGISTERED_ENTITY", f"{rel}:{number}:{match.start()+1}",
-                                        match[0], "Reference has no registered entity",
-                                        "Lookup existing entities; fix a typo, allocate a genuinely "
-                                        "new entity, or declare a narrow reference_exemptions token."))
+        # One pass over the whole file; line numbers are worked out only for unknown tokens.
+        # Every splitlines() separator is outside [\w-], so whole-text matches equal per-line ones.
+        starts = None
+        for match in pattern.finditer(content):
+            token = match[0]
+            if token in known or (match.start() and _LEFT_JOINED.match(content, match.start() - 1)):
+                continue
+            if starts is None:
+                starts = list(itertools.accumulate(
+                    (len(part) for part in content.splitlines(keepends=True)), initial=0))
+            number = bisect.bisect_right(starts, match.start())
+            column = match.start() - starts[number - 1] + 1
+            exemption = next((tokens for path, tokens in exemptions
+                              if _matches_glob(rel, path) and token in tokens), None)
+            if exemption is not None:
+                # Narrow, declared suppression: recorded, never silent.
+                if len(audit["suppressed"]) < 50:
+                    audit["suppressed"].append(
+                        {"file": rel, "line": number, "column": column, "token": token})
+                continue
+            issues.append(Issue("ERR_UNREGISTERED_ENTITY", f"{rel}:{number}:{column}",
+                                token, "Reference has no registered entity",
+                                "Lookup existing entities; fix a typo, allocate a genuinely "
+                                "new entity, or declare a narrow reference_exemptions token."))
     return issues, audit
 
 
